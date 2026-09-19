@@ -1,0 +1,12 @@
+dist/
+node_modules/
+.env
+.env.*
+__*
+*/dist
+*/node_modules
+*/.env
+.DS_Store
+*.DS_Store
+.agents/
+target
