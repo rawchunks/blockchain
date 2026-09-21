@@ -73,4 +73,35 @@ contract Factory is ERC721, IFactory {
         emit SongMinted(songId, msg.sender, licenseAmount, licensePrice, streamPrice, remixable, metadataUri);
         _safeMint(msg.sender, songId);
     }
+
+    /// @inheritdoc IFactory
+    function mintRemix(
+        uint256 licenseAmount,
+        uint256 licensePrice,
+        uint256 streamPrice,
+        uint256 parentSongId,
+        address remixer,
+        string calldata metadataUri
+    ) external onlyAuthorizedConsumer returns (uint256 songId) {
+        if (bytes(metadataUri).length == 0) revert EmptyMetadataUri();
+        if (remixer == address(0)) revert InvalidAddress();
+        if (_ownerOf(parentSongId) == address(0)) revert SongNotFound(parentSongId);
+
+        songId = _nextSongId++;
+        _totalSongs++;
+
+        _songs[songId] = Song({
+            licenseAmount: licenseAmount,
+            licensePrice: licensePrice,
+            streamPrice: streamPrice,
+            creator: remixer,
+            remixable: false, // Remixes cannot be remixed further
+            isRemix: true,
+            parentSongId: parentSongId,
+            metadataUri: metadataUri
+        });
+
+        emit SongMinted(songId, remixer, licenseAmount, licensePrice, streamPrice, false, metadataUri);
+        _safeMint(remixer, songId);
+    }
 }
