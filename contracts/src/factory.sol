@@ -150,4 +150,37 @@ contract Factory is ERC721, IFactory {
     function getSongCreator(uint256 songId) external view onlyExistingSong(songId) returns (address) {
         return _songs[songId].creator;
     }
+
+    /// @inheritdoc IFactory
+    function updatePricing(
+        uint256 songId,
+        uint256 newLicensePrice,
+        uint256 newStreamPrice
+    ) external onlySongCreator(songId) {
+        _songs[songId].licensePrice = newLicensePrice;
+        _songs[songId].streamPrice = newStreamPrice;
+        emit PricingUpdated(songId, newLicensePrice, newStreamPrice);
+    }
+
+    /// @inheritdoc IFactory
+    function updateMetadataUri(uint256 songId, string calldata newMetadataUri) external onlySongCreator(songId) {
+        if (bytes(newMetadataUri).length == 0) revert EmptyMetadataUri();
+        _songs[songId].metadataUri = newMetadataUri;
+        emit MetadataUriUpdated(songId, newMetadataUri);
+    }
+
+    /// @inheritdoc IFactory
+    function songExists(uint256 songId) external view returns (bool) {
+        return _ownerOf(songId) != address(0);
+    }
+
+    /// @inheritdoc IFactory
+    function totalSongs() external view returns (uint256) {
+        return _totalSongs;
+    }
+
+    /// @notice ERC721 token URI returning Pinata IPFS metadata URI
+    function tokenURI(uint256 tokenId) public view override onlyExistingSong(tokenId) returns (string memory) {
+        return _songs[tokenId].metadataUri;
+    }
 }
