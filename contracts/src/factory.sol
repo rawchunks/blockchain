@@ -104,4 +104,50 @@ contract Factory is ERC721, IFactory {
         emit SongMinted(songId, remixer, licenseAmount, licensePrice, streamPrice, false, metadataUri);
         _safeMint(remixer, songId);
     }
+
+    /// @inheritdoc IFactory
+    function consumeLicense(
+        uint256 songId,
+        address licensee
+    ) external onlyAuthorizedConsumer onlyExistingSong(songId) returns (uint256 remainingLicenses) {
+        if (licensee == address(0)) revert InvalidAddress();
+
+        Song storage song = _songs[songId];
+        if (!song.remixable) revert SongNotRemixable(songId);
+        if (song.isRemix) revert RemixCannotBeRemixed(songId);
+        if (song.licenseAmount == 0) revert NoLicensesAvailable(songId);
+
+        song.licenseAmount--;
+        _hasLicense[songId][licensee] = true;
+
+        emit LicenseConsumed(songId, licensee, song.licenseAmount);
+        return song.licenseAmount;
+    }
+
+    /// @inheritdoc IFactory
+    function hasLicense(uint256 songId, address user) external view returns (bool) {
+        return _hasLicense[songId][user];
+    }
+
+    /// @inheritdoc IFactory
+    function canRemix(uint256 songId) external view returns (bool) {
+        if (_ownerOf(songId) == address(0)) return false;
+        Song storage song = _songs[songId];
+        return song.remixable && !song.isRemix && song.licenseAmount > 0;
+    }
+
+    /// @inheritdoc IFactory
+    function getSong(uint256 songId) external view onlyExistingSong(songId) returns (Song memory) {
+        return _songs[songId];
+    }
+
+    /// @inheritdoc IFactory
+    function getLicenseAmount(uint256 songId) external view onlyExistingSong(songId) returns (uint256) {
+        return _songs[songId].licenseAmount;
+    }
+
+    /// @inheritdoc IFactory
+    function getSongCreator(uint256 songId) external view onlyExistingSong(songId) returns (address) {
+        return _songs[songId].creator;
+    }
 }
