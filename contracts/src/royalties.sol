@@ -62,4 +62,43 @@ contract Royalties is IRoyalties {
         treasuryFee = (licensePrice * TREASURY_FEE_BPS) / BASIS_POINTS;
         creatorShare = licensePrice - treasuryFee;
     }
+
+    /// @inheritdoc IRoyalties
+    function setUsdc(address newUsdc) external onlyAdmin {
+        if (newUsdc == address(0)) revert InvalidAddress();
+        address previousUsdc = _usdc;
+        _usdc = newUsdc;
+        emit UsdcUpdated(previousUsdc, newUsdc);
+    }
+
+    /// @inheritdoc IRoyalties
+    function setTreasury(address newTreasury) external onlyAdmin {
+        if (newTreasury == address(0)) revert InvalidAddress();
+        address previousTreasury = _treasury;
+        _treasury = newTreasury;
+        emit TreasuryUpdated(previousTreasury, newTreasury);
+    }
+
+    /// @inheritdoc IRoyalties
+    function usdc() external view returns (address) {
+        return _usdc;
+    }
+
+    /// @inheritdoc IRoyalties
+    function treasury() external view returns (address) {
+        return _treasury;
+    }
+
+    /// @inheritdoc IRoyalties
+    function transferAdmin(address newAdmin) external onlyAdmin {
+        if (newAdmin == address(0)) revert InvalidAddress();
+        address previousAdmin = _admin;
+        _admin = newAdmin;
+        emit AdminTransferred(previousAdmin, newAdmin);
+    }
+
+    /// @inheritdoc IRoyalties
+    function getAdmin() external view returns (address) {
+        return _admin;
+    }
 }
