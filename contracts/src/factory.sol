@@ -183,4 +183,41 @@ contract Factory is ERC721, IFactory {
     function tokenURI(uint256 tokenId) public view override onlyExistingSong(tokenId) returns (string memory) {
         return _songs[tokenId].metadataUri;
     }
+
+    /// @inheritdoc IFactory
+    function authorizeConsumer(address consumer) external onlyAdmin {
+        if (consumer == address(0)) revert InvalidAddress();
+        emit ConsumerAuthorized(consumer);
+        // forge-lint: disable-next-line(missing-events-access-control)
+        _authorizedConsumers[consumer] = true;
+    }
+
+    /// @inheritdoc IFactory
+    function revokeConsumer(address consumer) external onlyAdmin {
+        emit ConsumerRevoked(consumer);
+        // forge-lint: disable-next-line(missing-events-access-control)
+        _authorizedConsumers[consumer] = false;
+    }
+
+    /// @inheritdoc IFactory
+    function isAuthorizedConsumer(address consumer) external view returns (bool) {
+        return _authorizedConsumers[consumer] || consumer == _admin;
+    }
+
+    /// @inheritdoc IFactory
+    function transferAdmin(address newAdmin) external onlyAdmin {
+        if (newAdmin == address(0)) revert InvalidAddress();
+        address previousAdmin = _admin;
+        _admin = newAdmin;
+        emit AdminTransferred(previousAdmin, newAdmin);
+    }
+
+    /// @inheritdoc IFactory
+    function getAdmin() external view returns (address) {
+        return _admin;
+    }
+
+    function supportsInterface(bytes4 interfaceId) public view override(ERC721, IERC165) returns (bool) {
+        return interfaceId == type(IFactory).interfaceId || super.supportsInterface(interfaceId);
+    }
 }
