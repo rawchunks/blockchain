@@ -52,4 +52,34 @@ contract RawchunksTest is Test {
         usdc.mint(remixer2, 1000 * 1e6);
         usdc.mint(remixer3, 1000 * 1e6);
     }
+
+    function testMintSong() public {
+        vm.startPrank(creator);
+        uint256 songId = factory.mintSong(
+            10,
+            25 * 1e6, // $25 USDC
+            20000,    // $0.02 USDC stream
+            true,
+            "ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi"
+        );
+        vm.stopPrank();
+
+        assertEq(songId, 1);
+        assertEq(factory.ownerOf(1), creator);
+        assertEq(factory.totalSongs(), 1);
+        assertEq(factory.getLicenseAmount(1), 10);
+        assertEq(factory.getSongCreator(1), creator);
+        assertTrue(factory.canRemix(1));
+
+        IFactory.Song memory song = factory.getSong(1);
+        assertEq(song.licenseAmount, 10);
+        assertEq(song.licensePrice, 25 * 1e6);
+        assertEq(song.streamPrice, 20000);
+        assertEq(song.creator, creator);
+        assertTrue(song.remixable);
+        assertFalse(song.isRemix);
+        assertEq(song.parentSongId, 0);
+        assertEq(song.metadataUri, "ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi");
+        assertEq(factory.tokenURI(1), "ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi");
+    }
 }
