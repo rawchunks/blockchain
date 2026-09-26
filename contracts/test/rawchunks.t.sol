@@ -154,4 +154,50 @@ contract RawchunksTest is Test {
         assertEq(ids[1], 3);
         assertEq(ids[2], 4);
     }
+
+    function testCannotRemixNonRemixableSong() public {
+        vm.prank(creator);
+        uint256 songId = factory.mintSong(10, 50 * 1e6, 20000, false, "ipfs://non-remixable");
+
+        vm.startPrank(remixer1);
+        usdc.approve(address(remix), 50 * 1e6);
+        IRemix.RemixParams memory params = IRemix.RemixParams(5, 30 * 1e6, 15000);
+
+        vm.expectRevert(abi.encodeWithSelector(IFactory.SongNotRemixable.selector, songId));
+        remix.remixSong(songId, params, "ipfs://remix");
+        vm.stopPrank();
+    }
+
+    function testCannotRemixARemix() public {
+        vm.prank(creator);
+        uint256 songId = factory.mintSong(2, 50 * 1e6, 20000, true, "ipfs://original");
+
+        vm.startPrank(remixer1);
+        usdc.approve(address(remix), 50 * 1e6);
+        IRemix.RemixParams memory params = IRemix.RemixParams(5, 30 * 1e6, 15000);
+        remix.buyLicense(songId);
+        uint256 remixId = remix.remixSong(songId, params, "ipfs://remix-1");
+        vm.stopPrank();
+
+        vm.startPrank(remixer2);
+        usdc.approve(address(remix), 30 * 1e6);
+        vm.expectRevert(abi.encodeWithSelector(IFactory.SongNotRemixable.selector, remixId));
+        remix.remixSong(remixId, params, "ipfs://remix-2");
+        vm.stopPrank();
+    }
+
+    function testFreeRemix() public {
+        vm.prank(creator);
+        uint256 songId = factory.mintSong(1, 0, 20000, true, "ipfs://free-song");
+
+        vm.startPrank(remixer1);
+        IRemix.RemixParams memory params = IRemix.RemixParams(1, 0, 20000);
+        remix.buyLicense(songId);
+        assertEq(factory.totalSongs(), 1);
+        uint256 remixId = remix.remixSong(songId, params, "ipfs://free-remix");
+        vm.stopPrank();
+
+        assertEq(remixId, 2);
+        assertEq(factory.getLicenseAmount(songId), 0);
+    }
 }
