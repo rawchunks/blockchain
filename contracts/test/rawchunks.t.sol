@@ -82,4 +82,76 @@ contract RawchunksTest is Test {
         assertEq(song.metadataUri, "ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi");
         assertEq(factory.tokenURI(1), "ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi");
     }
+
+    function testLicensePurchaseAndRemix() public {
+        // Creator mints song with 2 licenses at $50 USDC each
+        vm.prank(creator);
+        uint256 songId = factory.mintSong(2, 50 * 1e6, 20000, true, "ipfs://original-song");
+
+        // Remixer1 approves Remix contract to spend USDC
+        vm.startPrank(remixer1);
+        usdc.approve(address(remix), 50 * 1e6);
+        remix.buyLicense(songId);
+        assertEq(factory.totalSongs(), 1);
+        assertEq(remix.totalRemixes(), 0);
+
+        IRemix.RemixParams memory params = IRemix.RemixParams({
+            licenseAmount: 5,
+            licensePrice: 30 * 1e6,
+            streamPrice: 15000
+        });
+
+        uint256 remixId = remix.remixSong(songId, params, "ipfs://remix-song-1");
+        vm.stopPrank();
+
+        assertEq(remixId, 2);
+        assertEq(factory.ownerOf(2), remixer1);
+        assertEq(factory.getLicenseAmount(songId), 1); // 2 - 1 = 1 left
+        assertTrue(factory.hasLicense(songId, remixer1));
+
+        // 80% to creator ($40), 20% to treasury ($10)
+        assertEq(usdc.balanceOf(creator), 40 * 1e6);
+        assertEq(usdc.balanceOf(treasury), 10 * 1e6);
+        assertEq(usdc.balanceOf(remixer1), (1000 - 50) * 1e6);
+
+        // Remix properties
+        IFactory.Song memory remixedSong = factory.getSong(2);
+        assertTrue(remixedSong.isRemix);
+        assertFalse(remixedSong.remixable);
+        assertEq(remixedSong.parentSongId, songId);
+        assertFalse(factory.canRemix(2));
+
+        // Remixer 2 buys last license
+        vm.startPrank(remixer2);
+        usdc.approve(address(remix), 50 * 1e6);
+        remix.buyLicense(songId);
+        remix.remixSong(songId, params, "ipfs://remix-song-2");
+        vm.stopPrank();
+
+        assertEq(factory.getLicenseAmount(songId), 0); // 0 left
+        assertFalse(factory.canRemix(songId));
+        assertEq(usdc.balanceOf(creator), 80 * 1e6);
+        assertEq(usdc.balanceOf(treasury), 20 * 1e6);
+
+        // Remixer 3 tries to remix when 0 licenses left -> MUST FAIL
+        vm.startPrank(remixer3);
+        usdc.approve(address(remix), 50 * 1e6);
+        vm.expectRevert(abi.encodeWithSelector(IFactory.NoLicensesAvailable.selector, songId));
+        remix.buyLicense(songId);
+        vm.stopPrank();
+
+        vm.prank(remixer1);
+        uint256 variation = remix.remixSong(songId, params, "ipfs://remix-song-1-variation");
+        assertEq(variation, 4);
+        assertEq(factory.getSong(variation).parentSongId, songId);
+        assertEq(factory.getLicenseAmount(songId), 0);
+        assertEq(usdc.balanceOf(remixer1), 950 * 1e6);
+        assertEq(usdc.balanceOf(creator), 80 * 1e6);
+        assertEq(usdc.balanceOf(treasury), 20 * 1e6);
+        assertEq(remix.getRemixCount(songId), 3);
+        uint256[] memory ids = remix.getRemixesOf(songId);
+        assertEq(ids[0], 2);
+        assertEq(ids[1], 3);
+        assertEq(ids[2], 4);
+    }
 }
