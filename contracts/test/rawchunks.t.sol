@@ -283,4 +283,53 @@ contract RawchunksTest is Test {
         assertEq(factory.totalSongs(), 1);
         assertEq(remix.totalRemixes(), 0);
     }
+
+    function testFuzzPurchaseSplit(uint64 price) public {
+        uint256 amount = bound(uint256(price), 1, 1000 * 1e6);
+        vm.prank(creator);
+        uint256 id = factory.mintSong(1, amount, 0, true, "ipfs://source");
+        vm.startPrank(remixer1);
+        usdc.approve(address(remix), amount);
+        remix.buyLicense(id);
+        vm.stopPrank();
+        assertEq(usdc.balanceOf(treasury), amount * 2000 / 10000);
+        assertEq(usdc.balanceOf(creator), amount - amount * 2000 / 10000);
+        assertEq(usdc.balanceOf(remixer1), 1000 * 1e6 - amount);
+        assertEq(factory.totalSongs(), 1);
+    }
+
+    function testUpdatePricingAndMetadataUri() public {
+        vm.prank(creator);
+        uint256 songId = factory.mintSong(5, 10 * 1e6, 20000, true, "ipfs://old-uri");
+
+        vm.prank(creator);
+        factory.updatePricing(songId, 20 * 1e6, 30000);
+
+        IFactory.Song memory song = factory.getSong(songId);
+        assertEq(song.licensePrice, 20 * 1e6);
+        assertEq(song.streamPrice, 30000);
+
+        vm.prank(creator);
+        factory.updateMetadataUri(songId, "ipfs://new-uri");
+        assertEq(factory.tokenURI(songId), "ipfs://new-uri");
+
+        // Non-creator cannot update
+        vm.prank(remixer1);
+        vm.expectRevert(abi.encodeWithSelector(IFactory.NotSongCreator.selector, songId, remixer1));
+        factory.updatePricing(songId, 30 * 1e6, 40000);
+    }
+
+    function testAdminAccessControl() public {
+        vm.prank(remixer1);
+        vm.expectRevert(abi.encodeWithSelector(IFactory.NotAuthorized.selector, remixer1));
+        factory.authorizeConsumer(address(0x123));
+
+        vm.prank(remixer1);
+        vm.expectRevert(abi.encodeWithSelector(IRoyalties.NotAdmin.selector, remixer1));
+        royalties.setUsdc(address(0x123));
+
+        vm.prank(admin);
+        royalties.transferAdmin(address(0x999));
+        assertEq(royalties.getAdmin(), address(0x999));
+    }
 }
