@@ -200,4 +200,87 @@ contract RawchunksTest is Test {
         assertEq(remixId, 2);
         assertEq(factory.getLicenseAmount(songId), 0);
     }
+
+    function testUnlicensedRemixDoesNotChargeOrMint() public {
+        vm.prank(creator);
+        uint256 id = factory.mintSong(2, 50 * 1e6, 0, true, "ipfs://source");
+        vm.startPrank(remixer1);
+        usdc.approve(address(remix), 100 * 1e6);
+        vm.expectRevert(abi.encodeWithSelector(IRemix.LicenseRequired.selector, id, remixer1));
+        remix.remixSong(id, IRemix.RemixParams(0, 0, 0), "ipfs://variation");
+        vm.stopPrank();
+        assertEq(factory.totalSongs(), 1);
+        assertEq(factory.getLicenseAmount(id), 2);
+        assertEq(usdc.balanceOf(remixer1), 1000 * 1e6);
+        assertEq(usdc.balanceOf(creator), 0);
+    }
+
+    function testRepeatedPurchaseDoesNotChargeOrConsume() public {
+        vm.prank(creator);
+        uint256 id = factory.mintSong(1, 50 * 1e6, 0, true, "ipfs://source");
+        vm.startPrank(remixer1);
+        usdc.approve(address(remix), 100 * 1e6);
+        remix.buyLicense(id);
+        remix.buyLicense(id);
+        vm.stopPrank();
+        assertTrue(factory.hasLicense(id, remixer1));
+        assertEq(factory.getLicenseAmount(id), 0);
+        assertEq(factory.totalSongs(), 1);
+        assertEq(usdc.balanceOf(remixer1), 950 * 1e6);
+        assertEq(usdc.allowance(remixer1, address(remix)), 50 * 1e6);
+    }
+
+    function testPaymentRevertRollsBackLicense() public {
+        vm.prank(creator);
+        uint256 id = factory.mintSong(1, 50 * 1e6, 0, true, "ipfs://source");
+        vm.prank(remixer1);
+        vm.expectRevert();
+        remix.buyLicense(id);
+        assertFalse(factory.hasLicense(id, remixer1));
+        assertEq(factory.getLicenseAmount(id), 1);
+        assertEq(usdc.balanceOf(creator), 0);
+        assertEq(usdc.balanceOf(treasury), 0);
+    }
+
+    function testPurchasedRightsSurvivePricingChange() public {
+        vm.prank(creator);
+        uint256 id = factory.mintSong(1, 50 * 1e6, 0, true, "ipfs://source");
+        vm.startPrank(remixer1);
+        usdc.approve(address(remix), 50 * 1e6);
+        remix.buyLicense(id);
+        vm.stopPrank();
+        vm.prank(creator);
+        factory.updatePricing(id, 900 * 1e6, 0);
+        vm.prank(remixer1);
+        remix.remixSong(id, IRemix.RemixParams(0, 0, 0), "ipfs://variation");
+        assertEq(usdc.balanceOf(remixer1), 950 * 1e6);
+        assertEq(factory.totalSongs(), 2);
+    }
+
+    function testInvalidPurchaseDoesNotTransfer() public {
+        vm.prank(creator);
+        uint256 id = factory.mintSong(1, 50 * 1e6, 0, false, "ipfs://source");
+        vm.startPrank(remixer1);
+        usdc.approve(address(remix), 50 * 1e6);
+        vm.expectRevert(abi.encodeWithSelector(IRemix.SongNotRemixable.selector, id));
+        remix.buyLicense(id);
+        vm.expectRevert(abi.encodeWithSelector(IRemix.SongNotFound.selector, 99));
+        remix.buyLicense(99);
+        vm.stopPrank();
+        assertEq(usdc.balanceOf(remixer1), 1000 * 1e6);
+        assertEq(factory.getLicenseAmount(id), 1);
+    }
+
+    function testInvalidVariationPreservesLicense() public {
+        vm.prank(creator);
+        uint256 id = factory.mintSong(1, 0, 0, true, "ipfs://source");
+        vm.startPrank(remixer1);
+        remix.buyLicense(id);
+        vm.expectRevert(IFactory.EmptyMetadataUri.selector);
+        remix.remixSong(id, IRemix.RemixParams(0, 0, 0), "");
+        vm.stopPrank();
+        assertTrue(factory.hasLicense(id, remixer1));
+        assertEq(factory.totalSongs(), 1);
+        assertEq(remix.totalRemixes(), 0);
+    }
 }
