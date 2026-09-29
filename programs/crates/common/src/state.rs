@@ -170,3 +170,107 @@ impl SongAccount {
         Address::derive_program_address(&[SEED_SONG, &song_id_bytes], program_id).unwrap()
     }
 }
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AuthorizedConsumer {
+    pub discriminator: u8,
+    pub bump: u8,
+    pub _padding: [u8; 6],
+    pub consumer: [u8; 32],
+}
+
+impl AuthorizedConsumer {
+    pub const DISCRIMINATOR: u8 = 3;
+    pub const LEN: usize = 40;
+
+    #[inline(always)]
+    pub fn from_account_info<'a>(account: &'a mut AccountView) -> Result<&'a mut Self, ProgramError> {
+        if account.data_len() < Self::LEN {
+            return Err(RawchunksError::InvalidInstructionData.into());
+        }
+        let data = unsafe { account.borrow_unchecked_mut() };
+        if data[0] != Self::DISCRIMINATOR {
+            return Err(RawchunksError::InvalidInstructionData.into());
+        }
+        Ok(unsafe { &mut *(data.as_mut_ptr() as *mut Self) })
+    }
+
+    #[inline(always)]
+    pub fn from_account_info_init<'a>(account: &'a mut AccountView) -> Result<&'a mut Self, ProgramError> {
+        if account.data_len() < Self::LEN {
+            return Err(RawchunksError::InvalidInstructionData.into());
+        }
+        let data = unsafe { account.borrow_unchecked_mut() };
+        Ok(unsafe { &mut *(data.as_mut_ptr() as *mut Self) })
+    }
+
+    #[inline(always)]
+    pub fn from_account_info_readonly<'a>(account: &'a AccountView) -> Result<&'a Self, ProgramError> {
+        if account.data_len() < Self::LEN {
+            return Err(RawchunksError::InvalidInstructionData.into());
+        }
+        let data = unsafe { account.borrow_unchecked() };
+        if data[0] != Self::DISCRIMINATOR {
+            return Err(RawchunksError::NotAuthorized.into());
+        }
+        Ok(unsafe { &*(data.as_ptr() as *const Self) })
+    }
+
+    pub fn find_pda(consumer: &[u8; 32], program_id: &Address) -> (Address, u8) {
+        Address::derive_program_address(&[SEED_CONSUMER, consumer.as_ref()], program_id).unwrap()
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LicenseRecord {
+    pub discriminator: u8,
+    pub bump: u8,
+    pub _padding: [u8; 6],
+    pub song_id: u64,
+    pub user: [u8; 32],
+}
+
+impl LicenseRecord {
+    pub const DISCRIMINATOR: u8 = 4;
+    pub const LEN: usize = 48;
+
+    #[inline(always)]
+    pub fn from_account_info<'a>(account: &'a mut AccountView) -> Result<&'a mut Self, ProgramError> {
+        if account.data_len() < Self::LEN {
+            return Err(RawchunksError::InvalidInstructionData.into());
+        }
+        let data = unsafe { account.borrow_unchecked_mut() };
+        if data[0] != Self::DISCRIMINATOR {
+            return Err(RawchunksError::InvalidInstructionData.into());
+        }
+        Ok(unsafe { &mut *(data.as_mut_ptr() as *mut Self) })
+    }
+
+    #[inline(always)]
+    pub fn from_account_info_init<'a>(account: &'a mut AccountView) -> Result<&'a mut Self, ProgramError> {
+        if account.data_len() < Self::LEN {
+            return Err(RawchunksError::InvalidInstructionData.into());
+        }
+        let data = unsafe { account.borrow_unchecked_mut() };
+        Ok(unsafe { &mut *(data.as_mut_ptr() as *mut Self) })
+    }
+
+    #[inline(always)]
+    pub fn from_account_info_readonly<'a>(account: &'a AccountView) -> Result<&'a Self, ProgramError> {
+        if account.data_len() < Self::LEN {
+            return Err(RawchunksError::InvalidInstructionData.into());
+        }
+        let data = unsafe { account.borrow_unchecked() };
+        if data[0] != Self::DISCRIMINATOR {
+            return Err(RawchunksError::InvalidInstructionData.into());
+        }
+        Ok(unsafe { &*(data.as_ptr() as *const Self) })
+    }
+
+    pub fn find_pda(song_id: u64, user: &[u8; 32], program_id: &Address) -> (Address, u8) {
+        let song_id_bytes = song_id.to_le_bytes();
+        Address::derive_program_address(&[SEED_LICENSE, &song_id_bytes, user.as_ref()], program_id).unwrap()
+    }
+}
