@@ -442,3 +442,77 @@ impl RemixRecord {
         Address::derive_program_address(&[SEED_REMIX, &song_id_bytes, &index_bytes], program_id).unwrap()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_all_struct_sizes_and_alignments() {
+        assert_eq!(core::mem::size_of::<RoyaltiesConfig>(), RoyaltiesConfig::LEN);
+        assert_eq!(RoyaltiesConfig::LEN % 8, 0);
+
+        assert_eq!(core::mem::size_of::<FactoryConfig>(), FactoryConfig::LEN);
+        assert_eq!(FactoryConfig::LEN % 8, 0);
+
+        assert_eq!(core::mem::size_of::<SongAccount>(), SongAccount::LEN);
+        assert_eq!(SongAccount::LEN % 8, 0);
+
+        assert_eq!(core::mem::size_of::<AuthorizedConsumer>(), AuthorizedConsumer::LEN);
+        assert_eq!(AuthorizedConsumer::LEN % 8, 0);
+
+        assert_eq!(core::mem::size_of::<LicenseRecord>(), LicenseRecord::LEN);
+        assert_eq!(LicenseRecord::LEN % 8, 0);
+
+        assert_eq!(core::mem::size_of::<RemixConfig>(), RemixConfig::LEN);
+        assert_eq!(RemixConfig::LEN % 8, 0);
+
+        assert_eq!(core::mem::size_of::<SongRemixCount>(), SongRemixCount::LEN);
+        assert_eq!(SongRemixCount::LEN % 8, 0);
+
+        assert_eq!(core::mem::size_of::<RemixRecord>(), RemixRecord::LEN);
+        assert_eq!(RemixRecord::LEN % 8, 0);
+    }
+
+    #[test]
+    fn test_pda_derivations() {
+        let dummy_program_id = Address::new_from_array([7u8; 32]);
+
+        let (royalties_pda, r_bump) = RoyaltiesConfig::find_pda(&dummy_program_id);
+        assert_ne!(royalties_pda.as_ref(), &[0u8; 32]);
+        assert_eq!(r_bump, r_bump);
+
+        let (factory_pda, f_bump) = FactoryConfig::find_pda(&dummy_program_id);
+        assert_ne!(factory_pda.as_ref(), &[0u8; 32]);
+        assert_eq!(f_bump, f_bump);
+
+        let (song_pda, s_bump) = SongAccount::find_pda(1, &dummy_program_id);
+        assert_ne!(song_pda.as_ref(), &[0u8; 32]);
+        assert_eq!(s_bump, s_bump);
+
+        let dummy_user = [9u8; 32];
+        let (consumer_pda, c_bump) = AuthorizedConsumer::find_pda(&dummy_user, &dummy_program_id);
+        assert_ne!(consumer_pda.as_ref(), &[0u8; 32]);
+        assert_eq!(c_bump, c_bump);
+
+        let (lic_pda, l_bump) = LicenseRecord::find_pda(1, &dummy_user, &dummy_program_id);
+        assert_ne!(lic_pda.as_ref(), &[0u8; 32]);
+        assert_eq!(l_bump, l_bump);
+
+        let (remix_pda, rx_bump) = RemixConfig::find_pda(&dummy_program_id);
+        assert_ne!(remix_pda.as_ref(), &[0u8; 32]);
+        assert_eq!(rx_bump, rx_bump);
+
+        let (auth_pda, a_bump) = RemixConfig::find_authority_pda(&dummy_program_id);
+        assert_ne!(auth_pda.as_ref(), &[0u8; 32]);
+        assert_eq!(a_bump, a_bump);
+
+        let (cnt_pda, cnt_bump) = SongRemixCount::find_pda(1, &dummy_program_id);
+        assert_ne!(cnt_pda.as_ref(), &[0u8; 32]);
+        assert_eq!(cnt_bump, cnt_bump);
+
+        let (rec_pda, rec_bump) = RemixRecord::find_pda(1, 0, &dummy_program_id);
+        assert_ne!(rec_pda.as_ref(), &[0u8; 32]);
+        assert_eq!(rec_bump, rec_bump);
+    }
+}
