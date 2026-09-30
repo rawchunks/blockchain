@@ -274,3 +274,171 @@ impl LicenseRecord {
         Address::derive_program_address(&[SEED_LICENSE, &song_id_bytes, user.as_ref()], program_id).unwrap()
     }
 }
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RemixConfig {
+    pub discriminator: u8,
+    pub bump: u8,
+    pub authority_bump: u8,
+    pub _padding: [u8; 5],
+    pub total_remixes: u64,
+    pub admin: [u8; 32],
+    pub factory_program: [u8; 32],
+    pub royalties_program: [u8; 32],
+}
+
+impl RemixConfig {
+    pub const DISCRIMINATOR: u8 = 1;
+    pub const LEN: usize = 112;
+
+    #[inline(always)]
+    pub fn from_account_info<'a>(account: &'a AccountView) -> Result<&'a mut Self, ProgramError> {
+        if account.data_len() < Self::LEN {
+            return Err(RawchunksError::InvalidInstructionData.into());
+        }
+        let data = unsafe { core::slice::from_raw_parts_mut(account.data_ptr() as *mut u8, account.data_len()) };
+        if data[0] != Self::DISCRIMINATOR {
+            return Err(RawchunksError::InvalidInstructionData.into());
+        }
+        Ok(unsafe { &mut *(data.as_mut_ptr() as *mut Self) })
+    }
+
+    #[inline(always)]
+    pub fn from_account_info_init<'a>(account: &'a AccountView) -> Result<&'a mut Self, ProgramError> {
+        if account.data_len() < Self::LEN {
+            return Err(RawchunksError::InvalidInstructionData.into());
+        }
+        let data = unsafe { core::slice::from_raw_parts_mut(account.data_ptr() as *mut u8, account.data_len()) };
+        Ok(unsafe { &mut *(data.as_mut_ptr() as *mut Self) })
+    }
+
+    #[inline(always)]
+    pub fn from_account_info_readonly<'a>(account: &'a AccountView) -> Result<&'a Self, ProgramError> {
+        if account.data_len() < Self::LEN {
+            return Err(RawchunksError::InvalidInstructionData.into());
+        }
+        let data = unsafe { core::slice::from_raw_parts(account.data_ptr(), account.data_len()) };
+        if data[0] != Self::DISCRIMINATOR {
+            return Err(RawchunksError::InvalidInstructionData.into());
+        }
+        Ok(unsafe { &*(data.as_ptr() as *const Self) })
+    }
+
+    pub fn find_pda(program_id: &Address) -> (Address, u8) {
+        Address::derive_program_address(&[SEED_REMIX], program_id).unwrap()
+    }
+
+    pub fn find_authority_pda(program_id: &Address) -> (Address, u8) {
+        Address::derive_program_address(&[SEED_REMIX_AUTHORITY], program_id).unwrap()
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SongRemixCount {
+    pub discriminator: u8,
+    pub bump: u8,
+    pub _padding: [u8; 6],
+    pub original_song_id: u64,
+    pub count: u64,
+}
+
+impl SongRemixCount {
+    pub const DISCRIMINATOR: u8 = 2;
+    pub const LEN: usize = 24;
+
+    #[inline(always)]
+    pub fn from_account_info<'a>(account: &'a AccountView) -> Result<&'a mut Self, ProgramError> {
+        if account.data_len() < Self::LEN {
+            return Err(RawchunksError::InvalidInstructionData.into());
+        }
+        let data = unsafe { core::slice::from_raw_parts_mut(account.data_ptr() as *mut u8, account.data_len()) };
+        if data[0] != Self::DISCRIMINATOR {
+            return Err(RawchunksError::InvalidInstructionData.into());
+        }
+        Ok(unsafe { &mut *(data.as_mut_ptr() as *mut Self) })
+    }
+
+    #[inline(always)]
+    pub fn from_account_info_init<'a>(account: &'a AccountView) -> Result<&'a mut Self, ProgramError> {
+        if account.data_len() < Self::LEN {
+            return Err(RawchunksError::InvalidInstructionData.into());
+        }
+        let data = unsafe { core::slice::from_raw_parts_mut(account.data_ptr() as *mut u8, account.data_len()) };
+        Ok(unsafe { &mut *(data.as_mut_ptr() as *mut Self) })
+    }
+
+    #[inline(always)]
+    pub fn from_account_info_readonly<'a>(account: &'a AccountView) -> Result<&'a Self, ProgramError> {
+        if account.data_len() < Self::LEN {
+            return Err(RawchunksError::InvalidInstructionData.into());
+        }
+        let data = unsafe { core::slice::from_raw_parts(account.data_ptr(), account.data_len()) };
+        if data[0] != Self::DISCRIMINATOR {
+            return Err(RawchunksError::InvalidInstructionData.into());
+        }
+        Ok(unsafe { &*(data.as_ptr() as *const Self) })
+    }
+
+    pub fn find_pda(original_song_id: u64, program_id: &Address) -> (Address, u8) {
+        let song_id_bytes = original_song_id.to_le_bytes();
+        Address::derive_program_address(&[SEED_REMIX_COUNT, &song_id_bytes], program_id).unwrap()
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RemixRecord {
+    pub discriminator: u8,
+    pub bump: u8,
+    pub _padding: [u8; 6],
+    pub original_song_id: u64,
+    pub remix_index: u64,
+    pub remix_song_id: u64,
+    pub remixer: [u8; 32],
+}
+
+impl RemixRecord {
+    pub const DISCRIMINATOR: u8 = 3;
+    pub const LEN: usize = 64;
+
+    #[inline(always)]
+    pub fn from_account_info<'a>(account: &'a AccountView) -> Result<&'a mut Self, ProgramError> {
+        if account.data_len() < Self::LEN {
+            return Err(RawchunksError::InvalidInstructionData.into());
+        }
+        let data = unsafe { core::slice::from_raw_parts_mut(account.data_ptr() as *mut u8, account.data_len()) };
+        if data[0] != Self::DISCRIMINATOR {
+            return Err(RawchunksError::InvalidInstructionData.into());
+        }
+        Ok(unsafe { &mut *(data.as_mut_ptr() as *mut Self) })
+    }
+
+    #[inline(always)]
+    pub fn from_account_info_init<'a>(account: &'a AccountView) -> Result<&'a mut Self, ProgramError> {
+        if account.data_len() < Self::LEN {
+            return Err(RawchunksError::InvalidInstructionData.into());
+        }
+        let data = unsafe { core::slice::from_raw_parts_mut(account.data_ptr() as *mut u8, account.data_len()) };
+        Ok(unsafe { &mut *(data.as_mut_ptr() as *mut Self) })
+    }
+
+    #[inline(always)]
+    pub fn from_account_info_readonly<'a>(account: &'a AccountView) -> Result<&'a Self, ProgramError> {
+        if account.data_len() < Self::LEN {
+            return Err(RawchunksError::InvalidInstructionData.into());
+        }
+        let data = unsafe { core::slice::from_raw_parts(account.data_ptr(), account.data_len()) };
+        if data[0] != Self::DISCRIMINATOR {
+            return Err(RawchunksError::InvalidInstructionData.into());
+        }
+        Ok(unsafe { &*(data.as_ptr() as *const Self) })
+    }
+
+    pub fn find_pda(original_song_id: u64, remix_index: u64, program_id: &Address) -> (Address, u8) {
+        let song_id_bytes = original_song_id.to_le_bytes();
+        let index_bytes = remix_index.to_le_bytes();
+        Address::derive_program_address(&[SEED_REMIX, &song_id_bytes, &index_bytes], program_id).unwrap()
+    }
+}
