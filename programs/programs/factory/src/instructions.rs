@@ -193,3 +193,120 @@ pub fn process_mint_song(
 
     Ok(())
 }
+
+pub fn process_mint_remix(
+    program_id: &Address,
+    accounts: &mut [AccountView],
+    data: &[u8],
+) -> ProgramResult {
+    let [caller, config_account, parent_song_account, remix_song_account, rest @ ..] = accounts else {
+        return Err(ProgramError::NotEnoughAccountKeys);
+    };
+
+    if !caller.is_signer() {
+        return Err(RawchunksError::MissingRequiredSignature.into());
+    }
+
+    // Minimum data: license_amount(8) + license_price(8) + stream_price(8) + parent_song_id(8) + remixer(32) + uri_len(2) = 66
+    if data.len() < 66 {
+        return Err(RawchunksError::InvalidInstructionData.into());
+    }
+
+    let license_amount = u64::from_le_bytes(data[0..8].try_into().unwrap());
+    let license_price = u64::from_le_bytes(data[8..16].try_into().unwrap());
+    let stream_price = u64::from_le_bytes(data[16..24].try_into().unwrap());
+    let parent_song_id = u64::from_le_bytes(data[24..32].try_into().unwrap());
+    let remixer: [u8; 32] = data[32..64].try_into().unwrap();
+    let uri_len = u16::from_le_bytes(data[64..66].try_into().unwrap()) as usize;
+
+    if uri_len == 0 {
+        return Err(RawchunksError::EmptyMetadataUri.into());
+    }
+    if uri_len > MAX_METADATA_URI_LEN || data.len() < 66 + uri_len {
+        return Err(RawchunksError::InvalidInstructionData.into());
+    }
+
+    let uri_bytes = &data[66..66 + uri_len];
+
+    let (expected_config_pda, _) = FactoryConfig::find_pda(program_id);
+    if config_account.address() != &expected_config_pda {
+        return Err(RawchunksError::InvalidSeeds.into());
+    }
+
+    let consumer_account = rest.first();
+    let config_admin = {
+        let config = FactoryConfig::from_account_info_readonly(config_account)?;
+        config.admin
+    };
+    check_is_authorized_consumer(caller, &config_admin, consumer_account, program_id)?;
+
+    // Check parent song
+    let (expected_parent_pda, _) = SongAccount::find_pda(parent_song_id, program_id);
+    if parent_song_account.address() != &expected_parent_pda {
+        return Err(RawchunksError::InvalidSeeds.into());
+    }
+    let parent_song = SongAccount::from_account_info_readonly(parent_song_account)?;
+    if parent_song.remixable == 0 {
+        return Err(RawchunksError::SongNotRemixable.into());
+    }
+    if parent_song.is_remix == 1 {
+        return Err(RawchunksError::RemixCannotBeRemixed.into());
+    }
+
+    let song_id = {
+        let config = FactoryConfig::from_account_info(config_account)?;
+        let id = config.next_song_id;
+        config.next_song_id = id.checked_add(1).ok_or(RawchunksError::MathOverflow)?;
+        config.total_songs = config.total_songs.checked_add(1).ok_or(RawchunksError::MathOverflow)?;
+        id
+    };
+
+    let (expected_song_pda, song_bump) = SongAccount::find_pda(song_id, program_id);
+    if remix_song_account.address() != &expected_song_pda {
+        return Err(RawchunksError::InvalidSeeds.into());
+    }
+
+    let song_id_bytes = song_id.to_le_bytes();
+    let song_bump_bytes = [song_bump];
+    let seeds = [
+        Seed::from(SEED_SONG),
+        Seed::from(&song_id_bytes),
+        Seed::from(&song_bump_bytes),
+    ];
+    let signer = Signer::from(&seeds);
+
+    CreateAccount::with_minimum_balance(
+        caller,
+        remix_song_account,
+        SongAccount::LEN as u64,
+        program_id,
+        None,
+    )?
+    .invoke_signed(&[signer])?;
+
+    let mut metadata_uri = [0u8; MAX_METADATA_URI_LEN];
+    metadata_uri[..uri_len].copy_from_slice(uri_bytes);
+
+    let remix_song = SongAccount::from_account_info_init(remix_song_account)?;
+    remix_song.discriminator = SongAccount::DISCRIMINATOR;
+    remix_song.bump = song_bump;
+    remix_song.remixable = 0; // Remixed songs are not remixable
+    remix_song.is_remix = 1;
+    remix_song.uri_len = uri_len as u16;
+    remix_song._padding = [0u8; 2];
+    remix_song.song_id = song_id;
+    remix_song.parent_song_id = parent_song_id;
+    remix_song.license_amount = license_amount;
+    remix_song.license_price = license_price;
+    remix_song.stream_price = stream_price;
+    remix_song.creator = remixer;
+    remix_song.metadata_uri = metadata_uri;
+
+    log!(
+        "RemixMinted: song_id={}, parent_song_id={}",
+        song_id,
+        parent_song_id
+    );
+
+    Ok(())
+}
