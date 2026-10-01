@@ -93,3 +93,103 @@ pub fn process_initialize(
 
     Ok(())
 }
+
+pub fn process_mint_song(
+    program_id: &Address,
+    accounts: &mut [AccountView],
+    data: &[u8],
+) -> ProgramResult {
+    let [creator, config_account, song_account, _system_program, _rem @ ..] = accounts else {
+        return Err(ProgramError::NotEnoughAccountKeys);
+    };
+
+    if !creator.is_signer() {
+        return Err(RawchunksError::MissingRequiredSignature.into());
+    }
+
+    // Minimum data: license_amount(8) + license_price(8) + stream_price(8) + remixable(1) + uri_len(2) = 27
+    if data.len() < 27 {
+        return Err(RawchunksError::InvalidInstructionData.into());
+    }
+
+    let license_amount = u64::from_le_bytes(data[0..8].try_into().unwrap());
+    let license_price = u64::from_le_bytes(data[8..16].try_into().unwrap());
+    let stream_price = u64::from_le_bytes(data[16..24].try_into().unwrap());
+    let remixable = data[24];
+    let uri_len = u16::from_le_bytes(data[25..27].try_into().unwrap()) as usize;
+
+    if uri_len == 0 {
+        return Err(RawchunksError::EmptyMetadataUri.into());
+    }
+    if uri_len > MAX_METADATA_URI_LEN || data.len() < 27 + uri_len {
+        return Err(RawchunksError::InvalidInstructionData.into());
+    }
+
+    let uri_bytes = &data[27..27 + uri_len];
+
+    let (expected_config_pda, _) = FactoryConfig::find_pda(program_id);
+    if config_account.address() != &expected_config_pda {
+        return Err(RawchunksError::InvalidSeeds.into());
+    }
+
+    let song_id = {
+        let config = FactoryConfig::from_account_info(config_account)?;
+        let id = config.next_song_id;
+        config.next_song_id = id.checked_add(1).ok_or(RawchunksError::MathOverflow)?;
+        config.total_songs = config.total_songs.checked_add(1).ok_or(RawchunksError::MathOverflow)?;
+        id
+    };
+
+    let (expected_song_pda, song_bump) = SongAccount::find_pda(song_id, program_id);
+    if song_account.address() != &expected_song_pda {
+        return Err(RawchunksError::InvalidSeeds.into());
+    }
+
+    let song_id_bytes = song_id.to_le_bytes();
+    let song_bump_bytes = [song_bump];
+    let seeds = [
+        Seed::from(SEED_SONG),
+        Seed::from(&song_id_bytes),
+        Seed::from(&song_bump_bytes),
+    ];
+    let signer = Signer::from(&seeds);
+
+    CreateAccount::with_minimum_balance(
+        creator,
+        song_account,
+        SongAccount::LEN as u64,
+        program_id,
+        None,
+    )?
+    .invoke_signed(&[signer])?;
+
+    let mut creator_addr = [0u8; 32];
+    creator_addr.copy_from_slice(creator.address().as_ref());
+
+    let mut metadata_uri = [0u8; MAX_METADATA_URI_LEN];
+    metadata_uri[..uri_len].copy_from_slice(uri_bytes);
+
+    let song = SongAccount::from_account_info_init(song_account)?;
+    song.discriminator = SongAccount::DISCRIMINATOR;
+    song.bump = song_bump;
+    song.remixable = remixable;
+    song.is_remix = 0;
+    song.uri_len = uri_len as u16;
+    song._padding = [0u8; 2];
+    song.song_id = song_id;
+    song.parent_song_id = 0;
+    song.license_amount = license_amount;
+    song.license_price = license_price;
+    song.stream_price = stream_price;
+    song.creator = creator_addr;
+    song.metadata_uri = metadata_uri;
+
+    log!(
+        "SongMinted: song_id={}, license_amount={}, license_price={}",
+        song_id,
+        license_amount,
+        license_price
+    );
+
+    Ok(())
+}
