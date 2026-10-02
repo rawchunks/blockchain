@@ -493,3 +493,149 @@ pub fn process_update_metadata_uri(
 
     Ok(())
 }
+
+pub fn process_authorize_consumer(
+    program_id: &Address,
+    accounts: &mut [AccountView],
+    data: &[u8],
+) -> ProgramResult {
+    let [admin, config_account, consumer_account, _system_program, _rem @ ..] = accounts else {
+        return Err(ProgramError::NotEnoughAccountKeys);
+    };
+
+    if !admin.is_signer() {
+        return Err(RawchunksError::MissingRequiredSignature.into());
+    }
+
+    if data.len() < 32 {
+        return Err(RawchunksError::InvalidInstructionData.into());
+    }
+
+    let consumer: [u8; 32] = data[0..32].try_into().unwrap();
+
+    let (expected_config_pda, _) = FactoryConfig::find_pda(program_id);
+    if config_account.address() != &expected_config_pda {
+        return Err(RawchunksError::InvalidSeeds.into());
+    }
+
+    let config = FactoryConfig::from_account_info_readonly(config_account)?;
+    if config.admin.as_ref() != admin.address().as_ref() {
+        return Err(RawchunksError::NotAdmin.into());
+    }
+
+    let (expected_consumer_pda, bump) = AuthorizedConsumer::find_pda(&consumer, program_id);
+    if consumer_account.address() != &expected_consumer_pda {
+        return Err(RawchunksError::InvalidSeeds.into());
+    }
+
+    if consumer_account.data_len() > 0 {
+        return Err(RawchunksError::AlreadyInitialized.into());
+    }
+
+    let bump_bytes = [bump];
+    let seeds = [
+        Seed::from(SEED_CONSUMER),
+        Seed::from(consumer.as_ref()),
+        Seed::from(&bump_bytes),
+    ];
+    let signer = Signer::from(&seeds);
+
+    CreateAccount::with_minimum_balance(
+        admin,
+        consumer_account,
+        AuthorizedConsumer::LEN as u64,
+        program_id,
+        None,
+    )?
+    .invoke_signed(&[signer])?;
+
+    let consumer_rec = AuthorizedConsumer::from_account_info_init(consumer_account)?;
+    consumer_rec.discriminator = AuthorizedConsumer::DISCRIMINATOR;
+    consumer_rec.bump = bump;
+    consumer_rec._padding = [0u8; 6];
+    consumer_rec.consumer = consumer;
+
+    log!("Consumer authorized");
+
+    Ok(())
+}
+
+pub fn process_revoke_consumer(
+    program_id: &Address,
+    accounts: &mut [AccountView],
+    data: &[u8],
+) -> ProgramResult {
+    let [admin, config_account, consumer_account, _rem @ ..] = accounts else {
+        return Err(ProgramError::NotEnoughAccountKeys);
+    };
+
+    if !admin.is_signer() {
+        return Err(RawchunksError::MissingRequiredSignature.into());
+    }
+
+    if data.len() < 32 {
+        return Err(RawchunksError::InvalidInstructionData.into());
+    }
+
+    let consumer: [u8; 32] = data[0..32].try_into().unwrap();
+
+    let (expected_config_pda, _) = FactoryConfig::find_pda(program_id);
+    if config_account.address() != &expected_config_pda {
+        return Err(RawchunksError::InvalidSeeds.into());
+    }
+
+    let config = FactoryConfig::from_account_info_readonly(config_account)?;
+    if config.admin.as_ref() != admin.address().as_ref() {
+        return Err(RawchunksError::NotAdmin.into());
+    }
+
+    let (expected_consumer_pda, _) = AuthorizedConsumer::find_pda(&consumer, program_id);
+    if consumer_account.address() != &expected_consumer_pda {
+        return Err(RawchunksError::InvalidSeeds.into());
+    }
+
+    // Close account by transferring lamports to admin and zeroing data
+    let consumer_lamports = consumer_account.lamports();
+    consumer_account.set_lamports(0);
+    admin.set_lamports(admin.lamports().checked_add(consumer_lamports).ok_or(RawchunksError::MathOverflow)?);
+
+    log!("Consumer revoked");
+
+    Ok(())
+}
+
+pub fn process_transfer_admin(
+    program_id: &Address,
+    accounts: &mut [AccountView],
+    data: &[u8],
+) -> ProgramResult {
+    let [admin, config_account, _rem @ ..] = accounts else {
+        return Err(ProgramError::NotEnoughAccountKeys);
+    };
+
+    if !admin.is_signer() {
+        return Err(RawchunksError::MissingRequiredSignature.into());
+    }
+
+    if data.len() < 32 {
+        return Err(RawchunksError::InvalidInstructionData.into());
+    }
+
+    let new_admin: [u8; 32] = data[0..32].try_into().unwrap();
+
+    let (expected_config_pda, _) = FactoryConfig::find_pda(program_id);
+    if config_account.address() != &expected_config_pda {
+        return Err(RawchunksError::InvalidSeeds.into());
+    }
+
+    let config = FactoryConfig::from_account_info(config_account)?;
+    if config.admin.as_ref() != admin.address().as_ref() {
+        return Err(RawchunksError::NotAdmin.into());
+    }
+
+    config.admin = new_admin;
+
+    log!("Factory admin transferred");
+
+    Ok(())
+}
