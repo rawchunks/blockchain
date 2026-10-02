@@ -404,3 +404,92 @@ pub fn process_consume_license(
 
     Ok(())
 }
+
+pub fn process_update_pricing(
+    program_id: &Address,
+    accounts: &mut [AccountView],
+    data: &[u8],
+) -> ProgramResult {
+    let [creator, song_account, _rem @ ..] = accounts else {
+        return Err(ProgramError::NotEnoughAccountKeys);
+    };
+
+    if !creator.is_signer() {
+        return Err(RawchunksError::MissingRequiredSignature.into());
+    }
+
+    if data.len() < 24 {
+        return Err(RawchunksError::InvalidInstructionData.into());
+    }
+
+    let song_id = u64::from_le_bytes(data[0..8].try_into().unwrap());
+    let new_license_price = u64::from_le_bytes(data[8..16].try_into().unwrap());
+    let new_stream_price = u64::from_le_bytes(data[16..24].try_into().unwrap());
+
+    let (expected_song_pda, _) = SongAccount::find_pda(song_id, program_id);
+    if song_account.address() != &expected_song_pda {
+        return Err(RawchunksError::InvalidSeeds.into());
+    }
+
+    let song = SongAccount::from_account_info(song_account)?;
+    if song.creator.as_ref() != creator.address().as_ref() {
+        return Err(RawchunksError::NotSongCreator.into());
+    }
+
+    song.license_price = new_license_price;
+    song.stream_price = new_stream_price;
+
+    log!("Song pricing updated: song_id={}", song_id);
+
+    Ok(())
+}
+
+pub fn process_update_metadata_uri(
+    program_id: &Address,
+    accounts: &mut [AccountView],
+    data: &[u8],
+) -> ProgramResult {
+    let [creator, song_account, _rem @ ..] = accounts else {
+        return Err(ProgramError::NotEnoughAccountKeys);
+    };
+
+    if !creator.is_signer() {
+        return Err(RawchunksError::MissingRequiredSignature.into());
+    }
+
+    if data.len() < 10 {
+        return Err(RawchunksError::InvalidInstructionData.into());
+    }
+
+    let song_id = u64::from_le_bytes(data[0..8].try_into().unwrap());
+    let uri_len = u16::from_le_bytes(data[8..10].try_into().unwrap()) as usize;
+
+    if uri_len == 0 {
+        return Err(RawchunksError::EmptyMetadataUri.into());
+    }
+    if uri_len > MAX_METADATA_URI_LEN || data.len() < 10 + uri_len {
+        return Err(RawchunksError::InvalidInstructionData.into());
+    }
+
+    let uri_bytes = &data[10..10 + uri_len];
+
+    let (expected_song_pda, _) = SongAccount::find_pda(song_id, program_id);
+    if song_account.address() != &expected_song_pda {
+        return Err(RawchunksError::InvalidSeeds.into());
+    }
+
+    let song = SongAccount::from_account_info(song_account)?;
+    if song.creator.as_ref() != creator.address().as_ref() {
+        return Err(RawchunksError::NotSongCreator.into());
+    }
+
+    let mut metadata_uri = [0u8; MAX_METADATA_URI_LEN];
+    metadata_uri[..uri_len].copy_from_slice(uri_bytes);
+
+    song.uri_len = uri_len as u16;
+    song.metadata_uri = metadata_uri;
+
+    log!("Song metadata URI updated: song_id={}", song_id);
+
+    Ok(())
+}
