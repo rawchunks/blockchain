@@ -310,3 +310,97 @@ pub fn process_mint_remix(
 
     Ok(())
 }
+
+pub fn process_consume_license(
+    program_id: &Address,
+    accounts: &mut [AccountView],
+    data: &[u8],
+) -> ProgramResult {
+    let [caller, config_account, song_account, license_record_account, rest @ ..] = accounts else {
+        return Err(ProgramError::NotEnoughAccountKeys);
+    };
+
+    if !caller.is_signer() {
+        return Err(RawchunksError::MissingRequiredSignature.into());
+    }
+
+    if data.len() < 40 {
+        return Err(RawchunksError::InvalidInstructionData.into());
+    }
+
+    let song_id = u64::from_le_bytes(data[0..8].try_into().unwrap());
+    let licensee: [u8; 32] = data[8..40].try_into().unwrap();
+
+    let (expected_config_pda, _) = FactoryConfig::find_pda(program_id);
+    if config_account.address() != &expected_config_pda {
+        return Err(RawchunksError::InvalidSeeds.into());
+    }
+
+    let consumer_account = rest.first();
+    let config_admin = {
+        let config = FactoryConfig::from_account_info_readonly(config_account)?;
+        config.admin
+    };
+    check_is_authorized_consumer(caller, &config_admin, consumer_account, program_id)?;
+
+    let (expected_song_pda, _) = SongAccount::find_pda(song_id, program_id);
+    if song_account.address() != &expected_song_pda {
+        return Err(RawchunksError::InvalidSeeds.into());
+    }
+
+    let song = SongAccount::from_account_info(song_account)?;
+    if song.remixable == 0 {
+        return Err(RawchunksError::SongNotRemixable.into());
+    }
+    if song.is_remix == 1 {
+        return Err(RawchunksError::RemixCannotBeRemixed.into());
+    }
+    if song.license_amount == 0 {
+        return Err(RawchunksError::NoLicensesAvailable.into());
+    }
+
+    song.license_amount -= 1;
+    let licenses_left = song.license_amount;
+
+    // Check or create license_record_account PDA
+    let (expected_license_pda, license_bump) = LicenseRecord::find_pda(song_id, &licensee, program_id);
+    if license_record_account.address() != &expected_license_pda {
+        return Err(RawchunksError::InvalidSeeds.into());
+    }
+
+    if license_record_account.data_len() == 0 {
+        let song_id_bytes = song_id.to_le_bytes();
+        let license_bump_bytes = [license_bump];
+        let seeds = [
+            Seed::from(SEED_LICENSE),
+            Seed::from(&song_id_bytes),
+            Seed::from(licensee.as_ref()),
+            Seed::from(&license_bump_bytes),
+        ];
+        let signer = Signer::from(&seeds);
+
+        CreateAccount::with_minimum_balance(
+            caller,
+            license_record_account,
+            LicenseRecord::LEN as u64,
+            program_id,
+            None,
+        )?
+        .invoke_signed(&[signer])?;
+
+        let record = LicenseRecord::from_account_info_init(license_record_account)?;
+        record.discriminator = LicenseRecord::DISCRIMINATOR;
+        record.bump = license_bump;
+        record._padding = [0u8; 6];
+        record.song_id = song_id;
+        record.user = licensee;
+    }
+
+    log!(
+        "LicenseConsumed: song_id={}, licenses_left={}",
+        song_id,
+        licenses_left
+    );
+
+    Ok(())
+}
