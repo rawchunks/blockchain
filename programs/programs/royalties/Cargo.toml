@@ -1,0 +1,14 @@
+[package]
+name = "rawchunks-royalties"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+pinocchio = "0.11.2"
+pinocchio-system = "0.6.1"
+pinocchio-token = "0.7.0"
+pinocchio-log = "0.5.1"
+rawchunks-common = { path = "../../crates/common" }
