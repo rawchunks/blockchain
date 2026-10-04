@@ -177,3 +177,108 @@ pub fn process_distribute_license_payment(
 
     Ok(())
 }
+
+pub fn process_set_usdc(
+    program_id: &Address,
+    accounts: &mut [AccountView],
+    data: &[u8],
+) -> ProgramResult {
+    let [admin, config_account, _rem @ ..] = accounts else {
+        return Err(ProgramError::NotEnoughAccountKeys);
+    };
+
+    if !admin.is_signer() {
+        return Err(RawchunksError::MissingRequiredSignature.into());
+    }
+
+    let (expected_pda, _) = RoyaltiesConfig::find_pda(program_id);
+    if config_account.address() != &expected_pda {
+        return Err(RawchunksError::InvalidSeeds.into());
+    }
+
+    if data.len() < 32 {
+        return Err(RawchunksError::InvalidInstructionData.into());
+    }
+
+    let config = RoyaltiesConfig::from_account_info(config_account)?;
+    if config.admin.as_ref() != admin.address().as_ref() {
+        return Err(RawchunksError::NotAdmin.into());
+    }
+
+    let new_usdc: [u8; 32] = data[0..32].try_into().map_err(|_| RawchunksError::InvalidInstructionData)?;
+    config.usdc_mint = new_usdc;
+
+    log!("USDC mint updated");
+
+    Ok(())
+}
+
+pub fn process_set_treasury(
+    program_id: &Address,
+    accounts: &mut [AccountView],
+    data: &[u8],
+) -> ProgramResult {
+    let [admin, config_account, _rem @ ..] = accounts else {
+        return Err(ProgramError::NotEnoughAccountKeys);
+    };
+
+    if !admin.is_signer() {
+        return Err(RawchunksError::MissingRequiredSignature.into());
+    }
+
+    let (expected_pda, _) = RoyaltiesConfig::find_pda(program_id);
+    if config_account.address() != &expected_pda {
+        return Err(RawchunksError::InvalidSeeds.into());
+    }
+
+    if data.len() < 32 {
+        return Err(RawchunksError::InvalidInstructionData.into());
+    }
+
+    let config = RoyaltiesConfig::from_account_info(config_account)?;
+    if config.admin.as_ref() != admin.address().as_ref() {
+        return Err(RawchunksError::NotAdmin.into());
+    }
+
+    let new_treasury: [u8; 32] = data[0..32].try_into().map_err(|_| RawchunksError::InvalidInstructionData)?;
+    config.treasury = new_treasury;
+
+    log!("Treasury updated");
+
+    Ok(())
+}
+
+pub fn process_transfer_admin(
+    program_id: &Address,
+    accounts: &mut [AccountView],
+    data: &[u8],
+) -> ProgramResult {
+    let [admin, config_account, _rem @ ..] = accounts else {
+        return Err(ProgramError::NotEnoughAccountKeys);
+    };
+
+    if !admin.is_signer() {
+        return Err(RawchunksError::MissingRequiredSignature.into());
+    }
+
+    let (expected_pda, _) = RoyaltiesConfig::find_pda(program_id);
+    if config_account.address() != &expected_pda {
+        return Err(RawchunksError::InvalidSeeds.into());
+    }
+
+    if data.len() < 32 {
+        return Err(RawchunksError::InvalidInstructionData.into());
+    }
+
+    let config = RoyaltiesConfig::from_account_info(config_account)?;
+    if config.admin.as_ref() != admin.address().as_ref() {
+        return Err(RawchunksError::NotAdmin.into());
+    }
+
+    let new_admin: [u8; 32] = data[0..32].try_into().map_err(|_| RawchunksError::InvalidInstructionData)?;
+    config.admin = new_admin;
+
+    log!("Royalties admin transferred");
+
+    Ok(())
+}
