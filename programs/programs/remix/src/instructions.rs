@@ -288,3 +288,207 @@ pub fn process_buy_license(
     log!("LicensePurchased: song_id={}, price={}", song_id, price);
     Ok(())
 }
+
+pub fn process_remix_song(
+    program_id: &Address,
+    accounts: &[AccountView],
+    data: &[u8],
+) -> ProgramResult {
+    let [remixer, remix_authority, remix_config_account, factory_program,
+        factory_config, original_song, remix_song, license_record,
+        remix_consumer_account, song_remix_count_account, remix_record_account,
+        system_program, ..] = accounts else {
+        return Err(ProgramError::NotEnoughAccountKeys);
+    };
+
+    if !remixer.is_signer() {
+        return Err(RawchunksError::MissingRequiredSignature.into());
+    }
+
+    if data.len() < 34 {
+        return Err(RawchunksError::InvalidInstructionData.into());
+    }
+
+    let original_song_id = u64::from_le_bytes(data[0..8].try_into().unwrap());
+    let license_amount = u64::from_le_bytes(data[8..16].try_into().unwrap());
+    let license_price = u64::from_le_bytes(data[16..24].try_into().unwrap());
+    let stream_price = u64::from_le_bytes(data[24..32].try_into().unwrap());
+    let uri_len = u16::from_le_bytes(data[32..34].try_into().unwrap()) as usize;
+
+    if uri_len == 0 {
+        return Err(RawchunksError::EmptyMetadataUri.into());
+    }
+    if uri_len > MAX_METADATA_URI_LEN || data.len() < 34 + uri_len {
+        return Err(RawchunksError::InvalidInstructionData.into());
+    }
+    let uri_bytes = &data[34..34 + uri_len];
+
+    let (authority_bump, _, _, _) = original(program_id, remix_config_account,
+        remix_authority, factory_program, factory_config, original_song, original_song_id)?;
+    if !licensed(factory_program.address(), license_record, original_song_id, remixer.address())? {
+        return Err(RawchunksError::NotAuthorized.into());
+    }
+
+    // Ensure remix_authority has sufficient lamports for accounts created during factory CPI
+    let rent = Rent::get()?;
+    let needed_lamports = rent.try_minimum_balance(SongAccount::LEN)?;
+    let current_auth_lamports = remix_authority.lamports();
+    if current_auth_lamports < needed_lamports {
+        let deficit = needed_lamports.saturating_sub(current_auth_lamports);
+        if deficit > 0 {
+            SystemTransfer {
+                from: remixer,
+                to: remix_authority,
+                lamports: deficit,
+            }
+            .invoke()?;
+        }
+    }
+
+    // Prepare authority signer for Factory CPIs
+    let auth_bump_bytes = [authority_bump];
+    let auth_seeds = [
+        Seed::from(SEED_REMIX_AUTHORITY),
+        Seed::from(&auth_bump_bytes),
+    ];
+    let auth_signer = Signer::from(&auth_seeds);
+
+    let remix_auth_addr = *remix_authority.address();
+    let factory_cfg_addr = *factory_config.address();
+    let original_song_addr = *original_song.address();
+    let remix_consumer_addr = *remix_consumer_account.address();
+    let system_prog_addr = *system_program.address();
+
+    // Step 3: Mint remix via factory CPI
+    let remix_song_addr = *remix_song.address();
+
+    let mut mint_ix_data = [0u8; 67 + MAX_METADATA_URI_LEN];
+    mint_ix_data[0] = 2; // mint_remix discriminator
+    mint_ix_data[1..9].copy_from_slice(&license_amount.to_le_bytes());
+    mint_ix_data[9..17].copy_from_slice(&license_price.to_le_bytes());
+    mint_ix_data[17..25].copy_from_slice(&stream_price.to_le_bytes());
+    mint_ix_data[25..33].copy_from_slice(&original_song_id.to_le_bytes());
+    mint_ix_data[33..65].copy_from_slice(remixer.address().as_ref());
+    mint_ix_data[65..67].copy_from_slice(&(uri_len as u16).to_le_bytes());
+    mint_ix_data[67..67 + uri_len].copy_from_slice(uri_bytes);
+
+    let mint_accounts = [
+        InstructionAccount::writable_signer(&remix_auth_addr),
+        InstructionAccount::writable(&factory_cfg_addr),
+        InstructionAccount::readonly(&original_song_addr),
+        InstructionAccount::writable(&remix_song_addr),
+        InstructionAccount::readonly(&remix_consumer_addr),
+        InstructionAccount::readonly(&system_prog_addr),
+    ];
+
+    let mint_ix = InstructionView {
+        program_id: factory_program.address(),
+        accounts: &mint_accounts,
+        data: &mint_ix_data[..67 + uri_len],
+    };
+
+    invoke_signed(&mint_ix, &[
+        remix_authority,
+        factory_config,
+        original_song,
+        remix_song,
+        remix_consumer_account,
+        system_program,
+    ], &[auth_signer])?;
+
+    // Read the newly minted remix_song_id from remix_song account data
+    let remixed_song_id = {
+        let r_song = rawchunks_common::SongAccount::from_account_info_readonly(remix_song)?;
+        r_song.song_id
+    };
+
+    // Step 4: Record remix in SongRemixCount and RemixRecord
+    let (expected_count_pda, count_bump) = SongRemixCount::find_pda(original_song_id, program_id);
+    if song_remix_count_account.address() != &expected_count_pda {
+        return Err(RawchunksError::InvalidSeeds.into());
+    }
+
+    let remix_index = if song_remix_count_account.data_len() == 0 {
+        let orig_id_bytes = original_song_id.to_le_bytes();
+        let count_bump_bytes = [count_bump];
+        let seeds = [
+            Seed::from(SEED_REMIX_COUNT),
+            Seed::from(&orig_id_bytes),
+            Seed::from(&count_bump_bytes),
+        ];
+        let signer = Signer::from(&seeds);
+
+        CreateAccount::with_minimum_balance(
+            remixer,
+            song_remix_count_account,
+            SongRemixCount::LEN as u64,
+            program_id,
+            None,
+        )?
+        .invoke_signed(&[signer])?;
+
+        let count_record = SongRemixCount::from_account_info_init(song_remix_count_account)?;
+        count_record.discriminator = SongRemixCount::DISCRIMINATOR;
+        count_record.bump = count_bump;
+        count_record._padding = [0u8; 6];
+        count_record.original_song_id = original_song_id;
+        count_record.count = 1;
+
+        0u64
+    } else {
+        let count_record = SongRemixCount::from_account_info(song_remix_count_account)?;
+        let idx = count_record.count;
+        count_record.count = idx.checked_add(1).ok_or(RawchunksError::MathOverflow)?;
+        idx
+    };
+
+    // Create RemixRecord
+    let (expected_record_pda, record_bump) = RemixRecord::find_pda(original_song_id, remix_index, program_id);
+    if remix_record_account.address() != &expected_record_pda {
+        return Err(RawchunksError::InvalidSeeds.into());
+    }
+
+    let orig_id_bytes = original_song_id.to_le_bytes();
+    let index_bytes = remix_index.to_le_bytes();
+    let record_bump_bytes = [record_bump];
+    let record_seeds = [
+        Seed::from(SEED_REMIX),
+        Seed::from(&orig_id_bytes),
+        Seed::from(&index_bytes),
+        Seed::from(&record_bump_bytes),
+    ];
+    let record_signer = Signer::from(&record_seeds);
+
+    CreateAccount::with_minimum_balance(
+        remixer,
+        remix_record_account,
+        RemixRecord::LEN as u64,
+        program_id,
+        None,
+    )?
+    .invoke_signed(&[record_signer])?;
+
+    let mut remixer_addr_bytes = [0u8; 32];
+    remixer_addr_bytes.copy_from_slice(remixer.address().as_ref());
+
+    let rec = RemixRecord::from_account_info_init(remix_record_account)?;
+    rec.discriminator = RemixRecord::DISCRIMINATOR;
+    rec.bump = record_bump;
+    rec._padding = [0u8; 6];
+    rec.original_song_id = original_song_id;
+    rec.remix_index = remix_index;
+    rec.remix_song_id = remixed_song_id;
+    rec.remixer = remixer_addr_bytes;
+
+    // Increment total remixes
+    let config = RemixConfig::from_account_info(remix_config_account)?;
+    config.total_remixes = config.total_remixes.checked_add(1).ok_or(RawchunksError::MathOverflow)?;
+
+    log!(
+        "SongRemixed: original_song_id={}, remixed_song_id={}",
+        original_song_id,
+        remixed_song_id
+    );
+
+    Ok(())
+}
