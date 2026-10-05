@@ -492,3 +492,81 @@ pub fn process_remix_song(
 
     Ok(())
 }
+
+pub fn process_update_programs(
+    program_id: &Address,
+    accounts: &[AccountView],
+    data: &[u8],
+) -> ProgramResult {
+    if accounts.len() < 2 {
+        return Err(ProgramError::NotEnoughAccountKeys);
+    }
+    let admin = &accounts[0];
+    let config_account = &accounts[1];
+
+    if !admin.is_signer() {
+        return Err(RawchunksError::MissingRequiredSignature.into());
+    }
+
+    if data.len() < 64 {
+        return Err(RawchunksError::InvalidInstructionData.into());
+    }
+
+    let factory_program: [u8; 32] = data[0..32].try_into().unwrap();
+    let royalties_program: [u8; 32] = data[32..64].try_into().unwrap();
+
+    let (expected_pda, _) = RemixConfig::find_pda(program_id);
+    if config_account.address() != &expected_pda {
+        return Err(RawchunksError::InvalidSeeds.into());
+    }
+
+    let config = RemixConfig::from_account_info(config_account)?;
+    if config.admin.as_ref() != admin.address().as_ref() {
+        return Err(RawchunksError::NotAdmin.into());
+    }
+
+    config.factory_program = factory_program;
+    config.royalties_program = royalties_program;
+
+    log!("Remix program references updated");
+
+    Ok(())
+}
+
+pub fn process_transfer_admin(
+    program_id: &Address,
+    accounts: &[AccountView],
+    data: &[u8],
+) -> ProgramResult {
+    if accounts.len() < 2 {
+        return Err(ProgramError::NotEnoughAccountKeys);
+    }
+    let admin = &accounts[0];
+    let config_account = &accounts[1];
+
+    if !admin.is_signer() {
+        return Err(RawchunksError::MissingRequiredSignature.into());
+    }
+
+    if data.len() < 32 {
+        return Err(RawchunksError::InvalidInstructionData.into());
+    }
+
+    let new_admin: [u8; 32] = data[0..32].try_into().unwrap();
+
+    let (expected_pda, _) = RemixConfig::find_pda(program_id);
+    if config_account.address() != &expected_pda {
+        return Err(RawchunksError::InvalidSeeds.into());
+    }
+
+    let config = RemixConfig::from_account_info(config_account)?;
+    if config.admin.as_ref() != admin.address().as_ref() {
+        return Err(RawchunksError::NotAdmin.into());
+    }
+
+    config.admin = new_admin;
+
+    log!("Remix admin transferred");
+
+    Ok(())
+}
