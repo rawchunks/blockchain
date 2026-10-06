@@ -279,3 +279,180 @@ fn test_factory_init_missing_signature_rejected() {
     let res = env.send_tx(ix, &[&payer]);
     assert!(res.is_err());
 }
+
+#[test]
+fn test_factory_mint_standard_remixable_song() {
+    let mut env = TestEnv::new();
+    let admin = env.admin();
+    let (config_pda, _) = find_factory_config_pda(&FACTORY_PROGRAM_ID);
+    env.send_tx(build_init_factory_ix(&admin.pubkey(), &config_pda), &[&admin]).unwrap();
+
+    let creator = Keypair::new();
+    env.airdrop(&creator.pubkey(), 2_000_000_000);
+
+    let song_id = 1u64;
+    let (song_pda, bump) = find_song_pda(song_id, &FACTORY_PROGRAM_ID);
+    let uri = "ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi";
+
+    let mint_ix = build_mint_song_ix(
+        &creator.pubkey(),
+        &config_pda,
+        &song_pda,
+        10,
+        5_000_000,
+        10_000,
+        1,
+        uri,
+    );
+    let cu = env.send_tx(mint_ix, &[&creator]).expect("mint song");
+    assert!(cu < 15_000, "Compute budget exceeded: {}", cu);
+
+    let account = env.svm.get_account(&song_pda).expect("song exists");
+    assert_eq!(account.data.len(), SongAccount::LEN);
+    assert_eq!(account.data[0], SongAccount::DISCRIMINATOR);
+    assert_eq!(account.data[1], bump);
+    assert_eq!(account.data[2], 1); // remixable
+    assert_eq!(account.data[3], 0); // is_remix
+    let parsed_uri_len = u16::from_le_bytes(account.data[4..6].try_into().unwrap()) as usize;
+    assert_eq!(parsed_uri_len, uri.len());
+
+    let parsed_song_id = u64::from_le_bytes(account.data[8..16].try_into().unwrap());
+    assert_eq!(parsed_song_id, 1);
+    let parsed_parent_id = u64::from_le_bytes(account.data[16..24].try_into().unwrap());
+    assert_eq!(parsed_parent_id, 0);
+    let parsed_licenses = u64::from_le_bytes(account.data[24..32].try_into().unwrap());
+    assert_eq!(parsed_licenses, 10);
+    let parsed_lic_price = u64::from_le_bytes(account.data[32..40].try_into().unwrap());
+    assert_eq!(parsed_lic_price, 5_000_000);
+    let parsed_str_price = u64::from_le_bytes(account.data[40..48].try_into().unwrap());
+    assert_eq!(parsed_str_price, 10_000);
+    assert_eq!(&account.data[48..80], creator.pubkey().as_ref());
+    assert_eq!(&account.data[80..80 + uri.len()], uri.as_bytes());
+
+    let cfg_acc = env.svm.get_account(&config_pda).unwrap();
+    let next_id = u64::from_le_bytes(cfg_acc.data[40..48].try_into().unwrap());
+    let total = u64::from_le_bytes(cfg_acc.data[48..56].try_into().unwrap());
+    assert_eq!(next_id, 2);
+    assert_eq!(total, 1);
+}
+
+#[test]
+fn test_factory_mint_unlimited_licenses_and_free_pricing() {
+    let mut env = TestEnv::new();
+    let admin = env.admin();
+    let (config_pda, _) = find_factory_config_pda(&FACTORY_PROGRAM_ID);
+    env.send_tx(build_init_factory_ix(&admin.pubkey(), &config_pda), &[&admin]).unwrap();
+
+    let creator = Keypair::new();
+    env.airdrop(&creator.pubkey(), 2_000_000_000);
+
+    let song_id = 1u64;
+    let (song_pda, _) = find_song_pda(song_id, &FACTORY_PROGRAM_ID);
+    let uri = "ipfs://unlimited-free-track";
+
+    let mint_ix = build_mint_song_ix(
+        &creator.pubkey(),
+        &config_pda,
+        &song_pda,
+        u64::MAX,
+        0,
+        0,
+        1,
+        uri,
+    );
+    env.send_tx(mint_ix, &[&creator]).unwrap();
+
+    let account = env.svm.get_account(&song_pda).unwrap();
+    let parsed_licenses = u64::from_le_bytes(account.data[24..32].try_into().unwrap());
+    let parsed_price = u64::from_le_bytes(account.data[32..40].try_into().unwrap());
+    assert_eq!(parsed_licenses, u64::MAX);
+    assert_eq!(parsed_price, 0);
+}
+
+#[test]
+fn test_factory_mint_non_remixable_song() {
+    let mut env = TestEnv::new();
+    let admin = env.admin();
+    let (config_pda, _) = find_factory_config_pda(&FACTORY_PROGRAM_ID);
+    env.send_tx(build_init_factory_ix(&admin.pubkey(), &config_pda), &[&admin]).unwrap();
+
+    let creator = Keypair::new();
+    env.airdrop(&creator.pubkey(), 2_000_000_000);
+
+    let song_id = 1u64;
+    let (song_pda, _) = find_song_pda(song_id, &FACTORY_PROGRAM_ID);
+    let uri = "ipfs://exclusive-copyright-no-remix";
+
+    let mint_ix = build_mint_song_ix(
+        &creator.pubkey(),
+        &config_pda,
+        &song_pda,
+        0,
+        0,
+        50_000,
+        0, // remixable = 0
+        uri,
+    );
+    env.send_tx(mint_ix, &[&creator]).unwrap();
+
+    let account = env.svm.get_account(&song_pda).unwrap();
+    assert_eq!(account.data[2], 0); // remixable = 0
+}
+
+#[test]
+fn test_factory_mint_sequential_songs() {
+    let mut env = TestEnv::new();
+    let admin = env.admin();
+    let (config_pda, _) = find_factory_config_pda(&FACTORY_PROGRAM_ID);
+    env.send_tx(build_init_factory_ix(&admin.pubkey(), &config_pda), &[&admin]).unwrap();
+
+    let creator = Keypair::new();
+    env.airdrop(&creator.pubkey(), 5_000_000_000);
+
+    for expected_id in 1..=3u64 {
+        let (song_pda, _) = find_song_pda(expected_id, &FACTORY_PROGRAM_ID);
+        let uri = format!("ipfs://song-sequential-{}", expected_id);
+        let mint_ix = build_mint_song_ix(
+            &creator.pubkey(),
+            &config_pda,
+            &song_pda,
+            5,
+            1_000_000,
+            5_000,
+            1,
+            &uri,
+        );
+        env.send_tx(mint_ix, &[&creator]).unwrap();
+
+        let song_acc = env.svm.get_account(&song_pda).unwrap();
+        let id = u64::from_le_bytes(song_acc.data[8..16].try_into().unwrap());
+        assert_eq!(id, expected_id);
+
+        let cfg_acc = env.svm.get_account(&config_pda).unwrap();
+        let next_id = u64::from_le_bytes(cfg_acc.data[40..48].try_into().unwrap());
+        let total = u64::from_le_bytes(cfg_acc.data[48..56].try_into().unwrap());
+        assert_eq!(next_id, expected_id + 1);
+        assert_eq!(total, expected_id);
+    }
+}
+
+#[test]
+fn test_factory_mint_empty_and_oversized_metadata_uri_rejected() {
+    let mut env = TestEnv::new();
+    let admin = env.admin();
+    let (config_pda, _) = find_factory_config_pda(&FACTORY_PROGRAM_ID);
+    env.send_tx(build_init_factory_ix(&admin.pubkey(), &config_pda), &[&admin]).unwrap();
+
+    let creator = Keypair::new();
+    env.airdrop(&creator.pubkey(), 2_000_000_000);
+    let (song_pda, _) = find_song_pda(1, &FACTORY_PROGRAM_ID);
+
+    let empty_uri_ix = build_mint_song_ix(&creator.pubkey(), &config_pda, &song_pda, 1, 100, 10, 1, "");
+    let res = env.send_tx(empty_uri_ix, &[&creator]);
+    assert!(res.is_err(), "Empty URI must be rejected");
+
+    let oversized_uri = "a".repeat(MAX_METADATA_URI_LEN + 1);
+    let oversized_uri_ix = build_mint_song_ix(&creator.pubkey(), &config_pda, &song_pda, 1, 100, 10, 1, &oversized_uri);
+    let res = env.send_tx(oversized_uri_ix, &[&creator]);
+    assert!(res.is_err(), "Oversized URI must be rejected");
+}
