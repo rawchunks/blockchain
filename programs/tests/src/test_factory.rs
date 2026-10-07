@@ -456,3 +456,169 @@ fn test_factory_mint_empty_and_oversized_metadata_uri_rejected() {
     let res = env.send_tx(oversized_uri_ix, &[&creator]);
     assert!(res.is_err(), "Oversized URI must be rejected");
 }
+
+#[test]
+fn test_factory_consumer_authorization_and_revocation_lifecycle() {
+    let mut env = TestEnv::new();
+    let admin = env.admin();
+    let (config_pda, _) = find_factory_config_pda(&FACTORY_PROGRAM_ID);
+    env.send_tx(build_init_factory_ix(&admin.pubkey(), &config_pda), &[&admin]).unwrap();
+
+    let consumer = Keypair::new().pubkey();
+    let (consumer_pda, bump) = find_authorized_consumer_pda(&consumer, &FACTORY_PROGRAM_ID);
+
+    let auth_ix = build_authorize_consumer_ix(&admin.pubkey(), &config_pda, &consumer_pda, &consumer);
+    let cu = env.send_tx(auth_ix, &[&admin]).expect("authorize consumer");
+    assert!(cu < 15_000);
+
+    let account = env.svm.get_account(&consumer_pda).expect("consumer PDA created");
+    assert_eq!(account.data.len(), AuthorizedConsumer::LEN);
+    assert_eq!(account.data[0], AuthorizedConsumer::DISCRIMINATOR);
+    assert_eq!(account.data[1], bump);
+    assert_eq!(&account.data[8..40], consumer.as_ref());
+
+    // Duplicate authorization rejected
+    let dup_auth_ix = build_authorize_consumer_ix(&admin.pubkey(), &config_pda, &consumer_pda, &consumer);
+    let res = env.send_tx(dup_auth_ix, &[&admin]);
+    assert!(res.is_err());
+
+    // Attacker cannot authorize consumer
+    let attacker = Keypair::new();
+    env.airdrop(&attacker.pubkey(), 1_000_000_000);
+    let attacker_consumer = Keypair::new().pubkey();
+    let (att_pda, _) = find_authorized_consumer_pda(&attacker_consumer, &FACTORY_PROGRAM_ID);
+    let att_auth_ix = build_authorize_consumer_ix(&attacker.pubkey(), &config_pda, &att_pda, &attacker_consumer);
+    let res = env.send_tx(att_auth_ix, &[&attacker]);
+    assert!(res.is_err());
+
+    // Attacker cannot revoke consumer
+    let att_revoke_ix = build_revoke_consumer_ix(&attacker.pubkey(), &config_pda, &consumer_pda, &consumer);
+    let res = env.send_tx(att_revoke_ix, &[&attacker]);
+    assert!(res.is_err());
+
+    // Admin revokes consumer: account closed and lamports returned to admin
+    let admin_balance_before = env.svm.get_account(&admin.pubkey()).unwrap().lamports;
+    let revoke_ix = build_revoke_consumer_ix(&admin.pubkey(), &config_pda, &consumer_pda, &consumer);
+    env.send_tx(revoke_ix, &[&admin]).expect("revoke consumer");
+
+    let consumer_acc_after = env.svm.get_account(&consumer_pda);
+    assert!(consumer_acc_after.is_none() || consumer_acc_after.unwrap().lamports == 0);
+    let admin_balance_after = env.svm.get_account(&admin.pubkey()).unwrap().lamports;
+    assert!(admin_balance_after > admin_balance_before - 100_000);
+}
+
+#[test]
+fn test_factory_consume_license_authorized_consumer_and_depletion() {
+    let mut env = TestEnv::new();
+    let admin = env.admin();
+    let (config_pda, _) = find_factory_config_pda(&FACTORY_PROGRAM_ID);
+    env.send_tx(build_init_factory_ix(&admin.pubkey(), &config_pda), &[&admin]).unwrap();
+
+    let consumer = Keypair::new();
+    env.airdrop(&consumer.pubkey(), 2_000_000_000);
+    let (consumer_pda, _) = find_authorized_consumer_pda(&consumer.pubkey(), &FACTORY_PROGRAM_ID);
+    env.send_tx(build_authorize_consumer_ix(&admin.pubkey(), &config_pda, &consumer_pda, &consumer.pubkey()), &[&admin]).unwrap();
+
+    let creator = Keypair::new();
+    env.airdrop(&creator.pubkey(), 2_000_000_000);
+    let song_id = 1u64;
+    let (song_pda, _) = find_song_pda(song_id, &FACTORY_PROGRAM_ID);
+    env.send_tx(build_mint_song_ix(&creator.pubkey(), &config_pda, &song_pda, 2, 100, 10, 1, "ipfs://test-depletion"), &[&creator]).unwrap();
+
+    let user_a = Keypair::new().pubkey();
+    let (lic_a_pda, bump_a) = find_license_record_pda(song_id, &user_a, &FACTORY_PROGRAM_ID);
+
+    // Consume 1st license (remaining: 1)
+    let consume_a = build_consume_license_ix(&consumer.pubkey(), &config_pda, &song_pda, &lic_a_pda, &consumer_pda, song_id, &user_a);
+    let cu = env.send_tx(consume_a, &[&consumer]).expect("consume 1");
+    assert!(cu < 25_000);
+
+    let song_acc = env.svm.get_account(&song_pda).unwrap();
+    let rem1 = u64::from_le_bytes(song_acc.data[24..32].try_into().unwrap());
+    assert_eq!(rem1, 1);
+
+    let lic_a_acc = env.svm.get_account(&lic_a_pda).unwrap();
+    assert_eq!(lic_a_acc.data[0], LicenseRecord::DISCRIMINATOR);
+    assert_eq!(lic_a_acc.data[1], bump_a);
+    let lic_a_song_id = u64::from_le_bytes(lic_a_acc.data[8..16].try_into().unwrap());
+    assert_eq!(lic_a_song_id, 1);
+    assert_eq!(&lic_a_acc.data[16..48], user_a.as_ref());
+
+    // Consume 2nd license (remaining: 0)
+    let user_b = Keypair::new().pubkey();
+    let (lic_b_pda, _) = find_license_record_pda(song_id, &user_b, &FACTORY_PROGRAM_ID);
+    let consume_b = build_consume_license_ix(&consumer.pubkey(), &config_pda, &song_pda, &lic_b_pda, &consumer_pda, song_id, &user_b);
+    env.send_tx(consume_b, &[&consumer]).expect("consume 2");
+
+    let song_acc = env.svm.get_account(&song_pda).unwrap();
+    let rem2 = u64::from_le_bytes(song_acc.data[24..32].try_into().unwrap());
+    assert_eq!(rem2, 0);
+
+    // Consume 3rd license -> Depleted! Must fail with NoLicensesAvailable
+    let user_c = Keypair::new().pubkey();
+    let (lic_c_pda, _) = find_license_record_pda(song_id, &user_c, &FACTORY_PROGRAM_ID);
+    let consume_c = build_consume_license_ix(&consumer.pubkey(), &config_pda, &song_pda, &lic_c_pda, &consumer_pda, song_id, &user_c);
+    let res = env.send_tx(consume_c, &[&consumer]);
+    assert!(res.is_err(), "Must reject consumption when license count is 0");
+}
+
+#[test]
+fn test_factory_consume_license_unauthorized_and_revoked_caller_rejected() {
+    let mut env = TestEnv::new();
+    let admin = env.admin();
+    let (config_pda, _) = find_factory_config_pda(&FACTORY_PROGRAM_ID);
+    env.send_tx(build_init_factory_ix(&admin.pubkey(), &config_pda), &[&admin]).unwrap();
+
+    let creator = Keypair::new();
+    env.airdrop(&creator.pubkey(), 2_000_000_000);
+    let song_id = 1u64;
+    let (song_pda, _) = find_song_pda(song_id, &FACTORY_PROGRAM_ID);
+    env.send_tx(build_mint_song_ix(&creator.pubkey(), &config_pda, &song_pda, 10, 100, 10, 1, "ipfs://unauth-test"), &[&creator]).unwrap();
+
+    let unauthorized_caller = Keypair::new();
+    env.airdrop(&unauthorized_caller.pubkey(), 1_000_000_000);
+    let user = Keypair::new().pubkey();
+    let (lic_pda, _) = find_license_record_pda(song_id, &user, &FACTORY_PROGRAM_ID);
+
+    // Call without authorized consumer PDA
+    let dummy_acc = Keypair::new().pubkey();
+    let consume_ix = build_consume_license_ix(&unauthorized_caller.pubkey(), &config_pda, &song_pda, &lic_pda, &dummy_acc, song_id, &user);
+    let res = env.send_tx(consume_ix, &[&unauthorized_caller]);
+    assert!(res.is_err(), "Unauthorized caller must be rejected");
+
+    // Authorize then revoke consumer, then attempt consume
+    let temp_consumer = Keypair::new();
+    env.airdrop(&temp_consumer.pubkey(), 1_000_000_000);
+    let (temp_consumer_pda, _) = find_authorized_consumer_pda(&temp_consumer.pubkey(), &FACTORY_PROGRAM_ID);
+    env.send_tx(build_authorize_consumer_ix(&admin.pubkey(), &config_pda, &temp_consumer_pda, &temp_consumer.pubkey()), &[&admin]).unwrap();
+    env.send_tx(build_revoke_consumer_ix(&admin.pubkey(), &config_pda, &temp_consumer_pda, &temp_consumer.pubkey()), &[&admin]).unwrap();
+
+    let consume_revoked = build_consume_license_ix(&temp_consumer.pubkey(), &config_pda, &song_pda, &lic_pda, &temp_consumer_pda, song_id, &user);
+    let res = env.send_tx(consume_revoked, &[&temp_consumer]);
+    assert!(res.is_err(), "Revoked consumer must be rejected");
+}
+
+#[test]
+fn test_factory_consume_license_on_non_remixable_song_rejected() {
+    let mut env = TestEnv::new();
+    let admin = env.admin();
+    let (config_pda, _) = find_factory_config_pda(&FACTORY_PROGRAM_ID);
+    env.send_tx(build_init_factory_ix(&admin.pubkey(), &config_pda), &[&admin]).unwrap();
+
+    let consumer = Keypair::new();
+    env.airdrop(&consumer.pubkey(), 2_000_000_000);
+    let (consumer_pda, _) = find_authorized_consumer_pda(&consumer.pubkey(), &FACTORY_PROGRAM_ID);
+    env.send_tx(build_authorize_consumer_ix(&admin.pubkey(), &config_pda, &consumer_pda, &consumer.pubkey()), &[&admin]).unwrap();
+
+    let creator = Keypair::new();
+    env.airdrop(&creator.pubkey(), 2_000_000_000);
+    let song_id = 1u64;
+    let (song_pda, _) = find_song_pda(song_id, &FACTORY_PROGRAM_ID);
+    env.send_tx(build_mint_song_ix(&creator.pubkey(), &config_pda, &song_pda, 10, 100, 10, 0, "ipfs://non-remixable"), &[&creator]).unwrap();
+
+    let user = Keypair::new().pubkey();
+    let (lic_pda, _) = find_license_record_pda(song_id, &user, &FACTORY_PROGRAM_ID);
+    let consume = build_consume_license_ix(&consumer.pubkey(), &config_pda, &song_pda, &lic_pda, &consumer_pda, song_id, &user);
+    let res = env.send_tx(consume, &[&consumer]);
+    assert!(res.is_err(), "Cannot consume license on non-remixable song");
+}
