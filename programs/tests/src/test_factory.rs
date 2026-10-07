@@ -622,3 +622,190 @@ fn test_factory_consume_license_on_non_remixable_song_rejected() {
     let res = env.send_tx(consume, &[&consumer]);
     assert!(res.is_err(), "Cannot consume license on non-remixable song");
 }
+
+#[test]
+fn test_factory_mint_remix_direct_lifecycle_and_nested_prevention() {
+    let mut env = TestEnv::new();
+    let admin = env.admin();
+    let (config_pda, _) = find_factory_config_pda(&FACTORY_PROGRAM_ID);
+    env.send_tx(build_init_factory_ix(&admin.pubkey(), &config_pda), &[&admin]).unwrap();
+
+    let consumer = Keypair::new();
+    env.airdrop(&consumer.pubkey(), 3_000_000_000);
+    let (consumer_pda, _) = find_authorized_consumer_pda(&consumer.pubkey(), &FACTORY_PROGRAM_ID);
+    env.send_tx(build_authorize_consumer_ix(&admin.pubkey(), &config_pda, &consumer_pda, &consumer.pubkey()), &[&admin]).unwrap();
+
+    let creator = Keypair::new();
+    env.airdrop(&creator.pubkey(), 2_000_000_000);
+    let parent_id = 1u64;
+    let (parent_pda, _) = find_song_pda(parent_id, &FACTORY_PROGRAM_ID);
+    env.send_tx(build_mint_song_ix(&creator.pubkey(), &config_pda, &parent_pda, 10, 100, 10, 1, "ipfs://parent-song"), &[&creator]).unwrap();
+
+    let remixer = Keypair::new().pubkey();
+    let remix_song_id = 2u64;
+    let (remix_song_pda, bump) = find_song_pda(remix_song_id, &FACTORY_PROGRAM_ID);
+
+    let mint_remix_ix = build_mint_remix_ix(
+        &consumer.pubkey(),
+        &config_pda,
+        &parent_pda,
+        &remix_song_pda,
+        &consumer_pda,
+        5,
+        500,
+        20,
+        parent_id,
+        &remixer,
+        "ipfs://remix-song-v1",
+    );
+    let cu = env.send_tx(mint_remix_ix, &[&consumer]).expect("mint remix");
+    assert!(cu < 25_000);
+
+    let remix_acc = env.svm.get_account(&remix_song_pda).expect("remix song created");
+    assert_eq!(remix_acc.data[0], SongAccount::DISCRIMINATOR);
+    assert_eq!(remix_acc.data[1], bump);
+    assert_eq!(remix_acc.data[2], 0); // remixable = 0 (remixes cannot be remixed)
+    assert_eq!(remix_acc.data[3], 1); // is_remix = 1
+    let parent_in_remix = u64::from_le_bytes(remix_acc.data[16..24].try_into().unwrap());
+    assert_eq!(parent_in_remix, parent_id);
+    assert_eq!(&remix_acc.data[48..80], remixer.as_ref());
+
+    // Attempting to consume license on the remix must fail with RemixCannotBeRemixed
+    let user = Keypair::new().pubkey();
+    let (lic_pda, _) = find_license_record_pda(remix_song_id, &user, &FACTORY_PROGRAM_ID);
+    let consume_on_remix = build_consume_license_ix(&consumer.pubkey(), &config_pda, &remix_song_pda, &lic_pda, &consumer_pda, remix_song_id, &user);
+    let res = env.send_tx(consume_on_remix, &[&consumer]);
+    assert!(res.is_err(), "Remix song cannot have licenses consumed for further remixing");
+
+    // Attempting to mint a remix of a remix must fail with RemixCannotBeRemixed
+    let (nested_remix_pda, _) = find_song_pda(3, &FACTORY_PROGRAM_ID);
+    let nested_remix_ix = build_mint_remix_ix(
+        &consumer.pubkey(),
+        &config_pda,
+        &remix_song_pda,
+        &nested_remix_pda,
+        &consumer_pda,
+        1,
+        100,
+        10,
+        remix_song_id,
+        &remixer,
+        "ipfs://nested-remix-illegal",
+    );
+    let res = env.send_tx(nested_remix_ix, &[&consumer]);
+    assert!(res.is_err(), "Nested derivative remixes must be rejected");
+}
+
+#[test]
+fn test_factory_update_pricing_and_metadata_uri() {
+    let mut env = TestEnv::new();
+    let admin = env.admin();
+    let (config_pda, _) = find_factory_config_pda(&FACTORY_PROGRAM_ID);
+    env.send_tx(build_init_factory_ix(&admin.pubkey(), &config_pda), &[&admin]).unwrap();
+
+    let creator = Keypair::new();
+    env.airdrop(&creator.pubkey(), 2_000_000_000);
+    let song_id = 1u64;
+    let (song_pda, _) = find_song_pda(song_id, &FACTORY_PROGRAM_ID);
+    env.send_tx(build_mint_song_ix(&creator.pubkey(), &config_pda, &song_pda, 10, 100, 10, 1, "ipfs://orig-uri"), &[&creator]).unwrap();
+
+    // Creator updates pricing
+    let new_lic_price = 250_000u64;
+    let new_str_price = 5_000u64;
+    let update_price_ix = build_update_pricing_ix(&creator.pubkey(), &song_pda, song_id, new_lic_price, new_str_price);
+    env.send_tx(update_price_ix, &[&creator]).expect("update pricing");
+
+    let song_acc = env.svm.get_account(&song_pda).unwrap();
+    let lic_p = u64::from_le_bytes(song_acc.data[32..40].try_into().unwrap());
+    let str_p = u64::from_le_bytes(song_acc.data[40..48].try_into().unwrap());
+    assert_eq!(lic_p, new_lic_price);
+    assert_eq!(str_p, new_str_price);
+
+    // Attacker cannot update pricing
+    let attacker = Keypair::new();
+    env.airdrop(&attacker.pubkey(), 1_000_000_000);
+    let att_price_ix = build_update_pricing_ix(&attacker.pubkey(), &song_pda, song_id, 999, 999);
+    let res = env.send_tx(att_price_ix, &[&attacker]);
+    assert!(res.is_err(), "Attacker cannot update song pricing");
+
+    // Creator updates metadata URI
+    let new_uri = "ipfs://updated-metadata-v2-hq";
+    let update_uri_ix = build_update_metadata_uri_ix(&creator.pubkey(), &song_pda, song_id, new_uri);
+    env.send_tx(update_uri_ix, &[&creator]).expect("update metadata uri");
+
+    let song_acc = env.svm.get_account(&song_pda).unwrap();
+    let uri_len = u16::from_le_bytes(song_acc.data[4..6].try_into().unwrap()) as usize;
+    assert_eq!(uri_len, new_uri.len());
+    assert_eq!(&song_acc.data[80..80 + new_uri.len()], new_uri.as_bytes());
+
+    // Attacker cannot update metadata URI
+    let att_uri_ix = build_update_metadata_uri_ix(&attacker.pubkey(), &song_pda, song_id, "ipfs://hacked");
+    let res = env.send_tx(att_uri_ix, &[&attacker]);
+    assert!(res.is_err(), "Attacker cannot update metadata URI");
+}
+
+#[test]
+fn test_factory_transfer_admin_lifecycle() {
+    let mut env = TestEnv::new();
+    let admin = env.admin();
+    let (config_pda, _) = find_factory_config_pda(&FACTORY_PROGRAM_ID);
+    env.send_tx(build_init_factory_ix(&admin.pubkey(), &config_pda), &[&admin]).unwrap();
+
+    let new_admin = Keypair::new();
+    env.airdrop(&new_admin.pubkey(), 2_000_000_000);
+
+    let transfer_ix = build_transfer_admin_ix(&admin.pubkey(), &config_pda, &new_admin.pubkey());
+    env.send_tx(transfer_ix, &[&admin]).expect("transfer admin");
+
+    let cfg_acc = env.svm.get_account(&config_pda).unwrap();
+    assert_eq!(&cfg_acc.data[8..40], new_admin.pubkey().as_ref());
+
+    // Old admin can no longer authorize consumer
+    let consumer = Keypair::new().pubkey();
+    let (consumer_pda, _) = find_authorized_consumer_pda(&consumer, &FACTORY_PROGRAM_ID);
+    let old_admin_ix = build_authorize_consumer_ix(&admin.pubkey(), &config_pda, &consumer_pda, &consumer);
+    let res = env.send_tx(old_admin_ix, &[&admin]);
+    assert!(res.is_err(), "Old admin must be revoked");
+
+    // New admin can authorize consumer
+    let new_admin_ix = build_authorize_consumer_ix(&new_admin.pubkey(), &config_pda, &consumer_pda, &consumer);
+    env.send_tx(new_admin_ix, &[&new_admin]).expect("new admin authorize");
+    assert!(env.svm.get_account(&consumer_pda).is_some());
+}
+
+#[test]
+fn test_factory_mollusk_instruction_benchmark() {
+    let deploy = deploy_path("rawchunks_factory");
+    let factory_pubkey = to_pubkey(&FACTORY_PROGRAM_ID);
+    std::env::set_var("SBF_OUT_DIR", deploy.parent().unwrap());
+    let mollusk = Mollusk::new(&factory_pubkey, "rawchunks_factory");
+
+    let admin = Pubkey::new_unique();
+    let (config_pda, _) = find_factory_config_pda(&FACTORY_PROGRAM_ID);
+    let config_pubkey = to_pubkey(&config_pda);
+
+    let ix = Instruction::new_with_bytes(
+        factory_pubkey,
+        &[0u8],
+        vec![
+            AccountMeta::new(admin, true),
+            AccountMeta::new(config_pubkey, false),
+            AccountMeta::new_readonly(to_pubkey(&SYSTEM_PROGRAM_ID), false),
+        ],
+    );
+
+    let admin_account = Account::new(10_000_000_000, 0, &to_pubkey(&SYSTEM_PROGRAM_ID));
+    let config_account = Account::new(0, 0, &to_pubkey(&SYSTEM_PROGRAM_ID));
+    let system_account = keyed_account_for_system_program();
+
+    let result = mollusk.process_instruction(
+        &ix,
+        &[
+            (admin, admin_account),
+            (config_pubkey, config_account),
+            (system_account.0, system_account.1),
+        ],
+    );
+
+    assert!(result.compute_units_consumed < 12_000, "Compute units: {}", result.compute_units_consumed);
+}
