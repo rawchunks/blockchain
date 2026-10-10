@@ -725,3 +725,388 @@ fn test_remix_mollusk_instruction_benchmark() {
 
     assert!(result.compute_units_consumed < 12_000, "Compute units: {}", result.compute_units_consumed);
 }
+
+#[test]
+fn test_remix_song_free_license_and_non_remixable_rejection() {
+    let mut env = TestEnv::new();
+    let admin = env.admin();
+
+    let (royalties_cfg_pda, _) = find_royalties_config_pda(&ROYALTIES_PROGRAM_ID);
+    let treasury_owner = Keypair::new().pubkey();
+    let usdc_mint = env.setup_mint(&admin.pubkey());
+
+    let mut init_roy_data = vec![0u8];
+    init_roy_data.extend_from_slice(treasury_owner.as_ref());
+    init_roy_data.extend_from_slice(usdc_mint.as_ref());
+    env.send_tx(
+        Instruction {
+            program_id: ROYALTIES_PROGRAM_ID,
+            accounts: vec![
+                AccountMeta::new(admin.pubkey(), true),
+                AccountMeta::new(royalties_cfg_pda, false),
+                AccountMeta::new_readonly(SYSTEM_PROGRAM_ID, false),
+            ],
+            data: init_roy_data,
+        },
+        &[&admin],
+    ).unwrap();
+
+    let (factory_cfg_pda, _) = find_factory_config_pda(&FACTORY_PROGRAM_ID);
+    env.send_tx(
+        Instruction {
+            program_id: FACTORY_PROGRAM_ID,
+            accounts: vec![
+                AccountMeta::new(admin.pubkey(), true),
+                AccountMeta::new(factory_cfg_pda, false),
+                AccountMeta::new_readonly(SYSTEM_PROGRAM_ID, false),
+            ],
+            data: vec![0u8],
+        },
+        &[&admin],
+    ).unwrap();
+
+    let (remix_cfg_pda, _) = find_remix_config_pda(&REMIX_PROGRAM_ID);
+    let (remix_auth_pda, _) = find_remix_authority_pda(&REMIX_PROGRAM_ID);
+    env.send_tx(
+        build_init_remix_ix(
+            &admin.pubkey(),
+            &remix_cfg_pda,
+            &FACTORY_PROGRAM_ID,
+            &ROYALTIES_PROGRAM_ID,
+        ),
+        &[&admin],
+    ).unwrap();
+
+    let (remix_consumer_pda, _) = find_authorized_consumer_pda(&remix_auth_pda, &FACTORY_PROGRAM_ID);
+    let mut auth_data = vec![6u8];
+    auth_data.extend_from_slice(remix_auth_pda.as_ref());
+    env.send_tx(
+        Instruction {
+            program_id: FACTORY_PROGRAM_ID,
+            accounts: vec![
+                AccountMeta::new(admin.pubkey(), true),
+                AccountMeta::new_readonly(factory_cfg_pda, false),
+                AccountMeta::new(remix_consumer_pda, false),
+                AccountMeta::new_readonly(SYSTEM_PROGRAM_ID, false),
+            ],
+            data: auth_data,
+        },
+        &[&admin],
+    ).unwrap();
+
+    env.airdrop(&remix_auth_pda, 500_000_000);
+
+    let creator = Keypair::new();
+    env.airdrop(&creator.pubkey(), 2_000_000_000);
+    let free_song_id = 1u64;
+    let (free_song_pda, _) = find_song_pda(free_song_id, &FACTORY_PROGRAM_ID);
+
+    let mut mint_free_data = vec![1u8];
+    mint_free_data.extend_from_slice(&5u64.to_le_bytes()); // 5 licenses
+    mint_free_data.extend_from_slice(&0u64.to_le_bytes()); // price = 0
+    mint_free_data.extend_from_slice(&0u64.to_le_bytes()); // stream_price = 0
+    mint_free_data.push(1); // remixable = 1
+    let free_uri = "ipfs://creative-commons-zero";
+    mint_free_data.extend_from_slice(&(free_uri.len() as u16).to_le_bytes());
+    mint_free_data.extend_from_slice(free_uri.as_bytes());
+
+    env.send_tx(
+        Instruction {
+            program_id: FACTORY_PROGRAM_ID,
+            accounts: vec![
+                AccountMeta::new(creator.pubkey(), true),
+                AccountMeta::new(factory_cfg_pda, false),
+                AccountMeta::new(free_song_pda, false),
+                AccountMeta::new_readonly(SYSTEM_PROGRAM_ID, false),
+            ],
+            data: mint_free_data,
+        },
+        &[&creator],
+    ).unwrap();
+
+    let locked_song_id = 2u64;
+    let (locked_song_pda, _) = find_song_pda(locked_song_id, &FACTORY_PROGRAM_ID);
+    let mut mint_locked_data = vec![1u8];
+    mint_locked_data.extend_from_slice(&0u64.to_le_bytes());
+    mint_locked_data.extend_from_slice(&0u64.to_le_bytes());
+    mint_locked_data.extend_from_slice(&10_000u64.to_le_bytes());
+    mint_locked_data.push(0); // remixable = 0
+    let locked_uri = "ipfs://all-rights-reserved";
+    mint_locked_data.extend_from_slice(&(locked_uri.len() as u16).to_le_bytes());
+    mint_locked_data.extend_from_slice(locked_uri.as_bytes());
+
+    env.send_tx(
+        Instruction {
+            program_id: FACTORY_PROGRAM_ID,
+            accounts: vec![
+                AccountMeta::new(creator.pubkey(), true),
+                AccountMeta::new(factory_cfg_pda, false),
+                AccountMeta::new(locked_song_pda, false),
+                AccountMeta::new_readonly(SYSTEM_PROGRAM_ID, false),
+            ],
+            data: mint_locked_data,
+        },
+        &[&creator],
+    ).unwrap();
+
+    let remixer = Keypair::new();
+    env.airdrop(&remixer.pubkey(), 2_000_000_000);
+    let dummy_token = env.setup_token_account(&remixer.pubkey(), &usdc_mint, 0);
+
+    let free_remix_id = 3u64;
+    let (free_remix_pda, _) = find_song_pda(free_remix_id, &FACTORY_PROGRAM_ID);
+    let (lic_rec_pda, _) = find_license_record_pda(free_song_id, &remixer.pubkey(), &FACTORY_PROGRAM_ID);
+    let (count_pda, _) = find_song_remix_count_pda(free_song_id, &REMIX_PROGRAM_ID);
+    let (rec_pda, _) = find_remix_record_pda(free_song_id, 0, &REMIX_PROGRAM_ID);
+
+    let purchase = build_buy_license_ix(
+        &remixer.pubkey(),
+        &remix_auth_pda,
+        &remix_cfg_pda,
+        &FACTORY_PROGRAM_ID,
+        &ROYALTIES_PROGRAM_ID,
+        &factory_cfg_pda,
+        &free_song_pda,
+        &lic_rec_pda,
+        &remix_consumer_pda,
+        &dummy_token,
+        &dummy_token,
+        &dummy_token,
+        &royalties_cfg_pda,
+        &TOKEN_PROGRAM_ID,
+        free_song_id,
+    );
+    env.send_tx(purchase, &[&remixer]).expect("buy license");
+    let free_remix_ix = build_remix_song_ix(
+        &remixer.pubkey(),
+        &remix_auth_pda,
+        &remix_cfg_pda,
+        &FACTORY_PROGRAM_ID,
+        &factory_cfg_pda,
+        &free_song_pda,
+        &free_remix_pda,
+        &lic_rec_pda,
+        &remix_consumer_pda,
+        &count_pda,
+        &rec_pda,
+        free_song_id,
+        2,
+        0,
+        0,
+        "ipfs://free-remix",
+    );
+    env.send_tx(free_remix_ix, &[&remixer]).expect("remix free song");
+    assert!(env.svm.get_account(&free_remix_pda).is_some());
+
+    let (fail_remix_pda, _) = find_song_pda(4, &FACTORY_PROGRAM_ID);
+    let (fail_lic_pda, _) = find_license_record_pda(locked_song_id, &remixer.pubkey(), &FACTORY_PROGRAM_ID);
+    let (fail_count_pda, _) = find_song_remix_count_pda(locked_song_id, &REMIX_PROGRAM_ID);
+    let (fail_rec_pda, _) = find_remix_record_pda(locked_song_id, 0, &REMIX_PROGRAM_ID);
+
+    let locked_remix_ix = build_remix_song_ix(
+        &remixer.pubkey(),
+        &remix_auth_pda,
+        &remix_cfg_pda,
+        &FACTORY_PROGRAM_ID,
+        &factory_cfg_pda,
+        &locked_song_pda,
+        &fail_remix_pda,
+        &fail_lic_pda,
+        &remix_consumer_pda,
+        &fail_count_pda,
+        &fail_rec_pda,
+        locked_song_id,
+        1,
+        0,
+        0,
+        "ipfs://fail-remix",
+    );
+    let res = env.send_tx(locked_remix_ix, &[&remixer]);
+    assert!(res.is_err(), "Must reject remix of non-remixable song");
+}
+
+#[test]
+fn test_remix_song_token_substitution_exploit() {
+    let mut env = TestEnv::new();
+    let admin = env.admin();
+
+    let (royalties_cfg_pda, _) = find_royalties_config_pda(&ROYALTIES_PROGRAM_ID);
+    let treasury_owner = Keypair::new().pubkey();
+    let usdc_mint = env.setup_mint(&admin.pubkey());
+
+    let mut init_roy_data = vec![0u8];
+    init_roy_data.extend_from_slice(treasury_owner.as_ref());
+    init_roy_data.extend_from_slice(usdc_mint.as_ref());
+    env.send_tx(
+        Instruction {
+            program_id: ROYALTIES_PROGRAM_ID,
+            accounts: vec![
+                AccountMeta::new(admin.pubkey(), true),
+                AccountMeta::new(royalties_cfg_pda, false),
+                AccountMeta::new_readonly(SYSTEM_PROGRAM_ID, false),
+            ],
+            data: init_roy_data,
+        },
+        &[&admin],
+    ).unwrap();
+
+    let (factory_cfg_pda, _) = find_factory_config_pda(&FACTORY_PROGRAM_ID);
+    env.send_tx(
+        Instruction {
+            program_id: FACTORY_PROGRAM_ID,
+            accounts: vec![
+                AccountMeta::new(admin.pubkey(), true),
+                AccountMeta::new(factory_cfg_pda, false),
+                AccountMeta::new_readonly(SYSTEM_PROGRAM_ID, false),
+            ],
+            data: vec![0u8],
+        },
+        &[&admin],
+    ).unwrap();
+
+    let (remix_cfg_pda, _) = find_remix_config_pda(&REMIX_PROGRAM_ID);
+    let (remix_auth_pda, _) = find_remix_authority_pda(&REMIX_PROGRAM_ID);
+    env.send_tx(
+        build_init_remix_ix(
+            &admin.pubkey(),
+            &remix_cfg_pda,
+            &FACTORY_PROGRAM_ID,
+            &ROYALTIES_PROGRAM_ID,
+        ),
+        &[&admin],
+    ).unwrap();
+
+    let (remix_consumer_pda, _) = find_authorized_consumer_pda(&remix_auth_pda, &FACTORY_PROGRAM_ID);
+    let mut auth_data = vec![6u8];
+    auth_data.extend_from_slice(remix_auth_pda.as_ref());
+    env.send_tx(
+        Instruction {
+            program_id: FACTORY_PROGRAM_ID,
+            accounts: vec![
+                AccountMeta::new(admin.pubkey(), true),
+                AccountMeta::new_readonly(factory_cfg_pda, false),
+                AccountMeta::new(remix_consumer_pda, false),
+                AccountMeta::new_readonly(SYSTEM_PROGRAM_ID, false),
+            ],
+            data: auth_data,
+        },
+        &[&admin],
+    ).unwrap();
+
+    env.airdrop(&remix_auth_pda, 500_000_000);
+
+    let creator = Keypair::new();
+    env.airdrop(&creator.pubkey(), 2_000_000_000);
+    let song_id = 1u64;
+    let (orig_song_pda, _) = find_song_pda(song_id, &FACTORY_PROGRAM_ID);
+
+    let orig_price = 10_000_000u64;
+    let mut mint_data = vec![1u8];
+    mint_data.extend_from_slice(&5u64.to_le_bytes());
+    mint_data.extend_from_slice(&orig_price.to_le_bytes());
+    mint_data.extend_from_slice(&50_000u64.to_le_bytes());
+    mint_data.push(1);
+    let orig_uri = "ipfs://valuable-song";
+    mint_data.extend_from_slice(&(orig_uri.len() as u16).to_le_bytes());
+    mint_data.extend_from_slice(orig_uri.as_bytes());
+
+    env.send_tx(
+        Instruction {
+            program_id: FACTORY_PROGRAM_ID,
+            accounts: vec![
+                AccountMeta::new(creator.pubkey(), true),
+                AccountMeta::new(factory_cfg_pda, false),
+                AccountMeta::new(orig_song_pda, false),
+                AccountMeta::new_readonly(SYSTEM_PROGRAM_ID, false),
+            ],
+            data: mint_data,
+        },
+        &[&creator],
+    ).unwrap();
+
+    let attacker = Keypair::new();
+    env.airdrop(&attacker.pubkey(), 2_000_000_000);
+
+    let garbage_mint = env.setup_mint(&attacker.pubkey());
+    let attacker_payer_token = env.setup_token_account(&attacker.pubkey(), &garbage_mint, 20_000_000);
+    let attacker_fake_creator = env.setup_token_account(&attacker.pubkey(), &garbage_mint, 0);
+    let attacker_fake_treasury = env.setup_token_account(&attacker.pubkey(), &garbage_mint, 0);
+
+    let (remix_song_pda, _) = find_song_pda(2, &FACTORY_PROGRAM_ID);
+    let (lic_rec_pda, _) = find_license_record_pda(song_id, &attacker.pubkey(), &FACTORY_PROGRAM_ID);
+    let (count_pda, _) = find_song_remix_count_pda(song_id, &REMIX_PROGRAM_ID);
+    let (rec_pda, _) = find_remix_record_pda(song_id, 0, &REMIX_PROGRAM_ID);
+
+    let attack_ix_counterfeit = build_buy_license_ix(
+        &attacker.pubkey(),
+        &remix_auth_pda,
+        &remix_cfg_pda,
+        &FACTORY_PROGRAM_ID,
+        &ROYALTIES_PROGRAM_ID,
+        &factory_cfg_pda,
+        &orig_song_pda,
+        &lic_rec_pda,
+        &remix_consumer_pda,
+        &attacker_payer_token,
+        &attacker_fake_creator,
+        &attacker_fake_treasury,
+        &royalties_cfg_pda,
+        &TOKEN_PROGRAM_ID,
+        song_id,
+    );
+
+    let res = env.send_tx(attack_ix_counterfeit, &[&attacker]);
+    assert!(res.is_err(), "Counterfeit mint must be rejected");
+
+    let attacker_real_usdc_payer = env.setup_token_account(&attacker.pubkey(), &usdc_mint, 20_000_000);
+    let attacker_real_usdc_fake_creator = env.setup_token_account(&attacker.pubkey(), &usdc_mint, 0);
+    let real_treasury_token = env.setup_token_account(&treasury_owner, &usdc_mint, 0);
+
+    let attack_ix_substitution = build_buy_license_ix(
+        &attacker.pubkey(),
+        &remix_auth_pda,
+        &remix_cfg_pda,
+        &FACTORY_PROGRAM_ID,
+        &ROYALTIES_PROGRAM_ID,
+        &factory_cfg_pda,
+        &orig_song_pda,
+        &lic_rec_pda,
+        &remix_consumer_pda,
+        &attacker_real_usdc_payer,
+        &attacker_real_usdc_fake_creator,
+        &real_treasury_token,
+        &royalties_cfg_pda,
+        &TOKEN_PROGRAM_ID,
+        song_id,
+    );
+
+    let res2 = env.send_tx(attack_ix_substitution, &[&attacker]);
+    assert!(res2.is_err(), "Substituting creator_token must be rejected");
+
+    let fake_orig_song_pda = Pubkey::new_unique();
+    let attack_ix_fake_orig = build_buy_license_ix(
+        &attacker.pubkey(),
+        &remix_auth_pda,
+        &remix_cfg_pda,
+        &FACTORY_PROGRAM_ID,
+        &ROYALTIES_PROGRAM_ID,
+        &factory_cfg_pda,
+        &fake_orig_song_pda,
+        &lic_rec_pda,
+        &remix_consumer_pda,
+        &attacker_real_usdc_payer,
+        &attacker_real_usdc_fake_creator,
+        &real_treasury_token,
+        &royalties_cfg_pda,
+        &TOKEN_PROGRAM_ID,
+        song_id,
+    );
+
+    let res3 = env.send_tx(attack_ix_fake_orig, &[&attacker]);
+    assert!(res3.is_err(), "Spoofed original_song account must be rejected");
+
+    let orig_acc = env.svm.get_account(&orig_song_pda).unwrap();
+    let orig_state = unsafe { &*(orig_acc.data.as_ptr() as *const SongAccount) };
+    assert_eq!(orig_state.license_amount, 5, "Licenses must remain untouched after failed attacks");
+    assert!(env.svm.get_account(&remix_song_pda).is_none(), "Remix song account must not exist");
+}
