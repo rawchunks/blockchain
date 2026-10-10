@@ -555,3 +555,173 @@ fn test_remix_song_full_three_program_orchestration() {
     let res = env.send_tx(nested_remix_ix, &[&remixer_3]);
     assert!(res.is_err(), "Must reject nested remix of a remix");
 }
+
+#[test]
+fn test_remix_song_program_spoofing_prevented() {
+    let mut env = TestEnv::new();
+    let admin = env.admin();
+
+    let (remix_cfg_pda, _) = find_remix_config_pda(&REMIX_PROGRAM_ID);
+    let (remix_auth_pda, _) = find_remix_authority_pda(&REMIX_PROGRAM_ID);
+    let (factory_cfg_pda, _) = find_factory_config_pda(&FACTORY_PROGRAM_ID);
+    let (royalties_cfg_pda, _) = find_royalties_config_pda(&ROYALTIES_PROGRAM_ID);
+
+    let init_rem_ix = build_init_remix_ix(
+        &admin.pubkey(),
+        &remix_cfg_pda,
+        &FACTORY_PROGRAM_ID,
+        &ROYALTIES_PROGRAM_ID,
+    );
+    env.send_tx(init_rem_ix, &[&admin]).unwrap();
+
+    let attacker = Keypair::new();
+    env.airdrop(&attacker.pubkey(), 2_000_000_000);
+
+    let fake_factory = Keypair::new().pubkey();
+    let fake_royalties = Keypair::new().pubkey();
+
+    let dummy_acc = Keypair::new().pubkey();
+    let spoof_factory_ix = build_remix_song_ix(
+        &attacker.pubkey(),
+        &remix_auth_pda,
+        &remix_cfg_pda,
+        &fake_factory,
+        &factory_cfg_pda,
+        &dummy_acc,
+        &dummy_acc,
+        &dummy_acc,
+        &dummy_acc,
+        &dummy_acc,
+        &dummy_acc,
+        1,
+        1,
+        0,
+        0,
+        "ipfs://spoof",
+    );
+    let res = env.send_tx(spoof_factory_ix, &[&attacker]);
+    assert!(res.is_err(), "Must reject spoofed factory program");
+
+    let spoof_royalties_ix = build_buy_license_ix(
+        &attacker.pubkey(),
+        &remix_auth_pda,
+        &remix_cfg_pda,
+        &FACTORY_PROGRAM_ID,
+        &fake_royalties,
+        &factory_cfg_pda,
+        &dummy_acc,
+        &dummy_acc,
+        &dummy_acc,
+        &dummy_acc,
+        &dummy_acc,
+        &dummy_acc,
+        &royalties_cfg_pda,
+        &TOKEN_PROGRAM_ID,
+        1,
+    );
+    let res = env.send_tx(spoof_royalties_ix, &[&attacker]);
+    assert!(res.is_err(), "Must reject spoofed royalties program");
+}
+
+#[test]
+fn test_remix_admin_controls_lifecycle() {
+    let mut env = TestEnv::new();
+    let admin = env.admin();
+    let (remix_cfg_pda, _) = find_remix_config_pda(&REMIX_PROGRAM_ID);
+
+    let init_ix = build_init_remix_ix(
+        &admin.pubkey(),
+        &remix_cfg_pda,
+        &FACTORY_PROGRAM_ID,
+        &ROYALTIES_PROGRAM_ID,
+    );
+    env.send_tx(init_ix, &[&admin]).unwrap();
+
+    let new_factory = Keypair::new().pubkey();
+    let new_royalties = Keypair::new().pubkey();
+
+    let update_ix = build_update_remix_programs_ix(
+        &admin.pubkey(),
+        &remix_cfg_pda,
+        &new_factory,
+        &new_royalties,
+    );
+    env.send_tx(update_ix, &[&admin]).expect("update programs");
+
+    let cfg_acc = env.svm.get_account(&remix_cfg_pda).unwrap();
+    assert_eq!(&cfg_acc.data[48..80], new_factory.as_ref());
+    assert_eq!(&cfg_acc.data[80..112], new_royalties.as_ref());
+
+    let attacker = Keypair::new();
+    env.airdrop(&attacker.pubkey(), 1_000_000_000);
+    let att_ix = build_update_remix_programs_ix(
+        &attacker.pubkey(),
+        &remix_cfg_pda,
+        &FACTORY_PROGRAM_ID,
+        &ROYALTIES_PROGRAM_ID,
+    );
+    let res = env.send_tx(att_ix, &[&attacker]);
+    assert!(res.is_err(), "Attacker cannot update programs");
+
+    let new_admin = Keypair::new();
+    env.airdrop(&new_admin.pubkey(), 1_000_000_000);
+    let transfer_ix = build_transfer_remix_admin_ix(
+        &admin.pubkey(),
+        &remix_cfg_pda,
+        &new_admin.pubkey(),
+    );
+    env.send_tx(transfer_ix, &[&admin]).expect("transfer admin");
+
+    let cfg_acc = env.svm.get_account(&remix_cfg_pda).unwrap();
+    assert_eq!(&cfg_acc.data[16..48], new_admin.pubkey().as_ref());
+
+    let old_admin_ix = build_update_remix_programs_ix(
+        &admin.pubkey(),
+        &remix_cfg_pda,
+        &FACTORY_PROGRAM_ID,
+        &ROYALTIES_PROGRAM_ID,
+    );
+    let res = env.send_tx(old_admin_ix, &[&admin]);
+    assert!(res.is_err(), "Old admin cannot update programs");
+}
+
+#[test]
+fn test_remix_mollusk_instruction_benchmark() {
+    let deploy = deploy_path("rawchunks_remix");
+    let remix_pubkey = to_pubkey(&REMIX_PROGRAM_ID);
+    std::env::set_var("SBF_OUT_DIR", deploy.parent().unwrap());
+    let mollusk = Mollusk::new(&remix_pubkey, "rawchunks_remix");
+
+    let admin = Pubkey::new_unique();
+    let (config_pda, _) = find_remix_config_pda(&REMIX_PROGRAM_ID);
+    let config_pubkey = to_pubkey(&config_pda);
+
+    let mut ix_data = vec![0u8];
+    ix_data.extend_from_slice(to_pubkey(&FACTORY_PROGRAM_ID).as_ref());
+    ix_data.extend_from_slice(to_pubkey(&ROYALTIES_PROGRAM_ID).as_ref());
+
+    let ix = Instruction::new_with_bytes(
+        remix_pubkey,
+        &ix_data,
+        vec![
+            AccountMeta::new(admin, true),
+            AccountMeta::new(config_pubkey, false),
+            AccountMeta::new_readonly(to_pubkey(&SYSTEM_PROGRAM_ID), false),
+        ],
+    );
+
+    let admin_account = Account::new(10_000_000_000, 0, &to_pubkey(&SYSTEM_PROGRAM_ID));
+    let config_account = Account::new(0, 0, &to_pubkey(&SYSTEM_PROGRAM_ID));
+    let system_account = keyed_account_for_system_program();
+
+    let result = mollusk.process_instruction(
+        &ix,
+        &[
+            (admin, admin_account),
+            (config_pubkey, config_account),
+            (system_account.0, system_account.1),
+        ],
+    );
+
+    assert!(result.compute_units_consumed < 12_000, "Compute units: {}", result.compute_units_consumed);
+}
