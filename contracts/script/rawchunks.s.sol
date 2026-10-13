@@ -17,13 +17,9 @@ contract Rawchunks is Script {
 
     // USDC addresses per network
     address public constant BASE_SEPOLIA_USDC = 0x036CbD53842c5426634e7929541eC2318f3dCF7e;
-    address public constant ARBITRUM_SEPOLIA_USDC = 0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d;
-    address public constant ROBINHOOD_TESTNET_USDC = 0xbf4479C07Dc6fdc6dAa764A0ccA06969e894275F;
     address public constant TEMPO_MODERATO_OUSD = 0x20c0000000000000000000006a37DA5C996874BE;
-    // address public constant ROBINHOOD_MAINNET_USDC = 
     // address public constant TEMPO_MAINNET_USDC =
     // address public constant BASE_MAINNET_USDC = 
-    // address public constant ARBITRUM_MAINNET_USDC =
 
     function computeAddress(bytes32 salt, bytes memory initCode) public pure returns (address) {
         return address(
@@ -91,10 +87,6 @@ contract Rawchunks is Script {
         address chainUsdc;
         if (block.chainid == 84532) {
             chainUsdc = BASE_SEPOLIA_USDC;
-        } else if (block.chainid == 421614) {
-            chainUsdc = ARBITRUM_SEPOLIA_USDC;
-        } else if (block.chainid == 46630) {
-            chainUsdc = ROBINHOOD_TESTNET_USDC;
         } else if (block.chainid == 42431) {
             chainUsdc = TEMPO_MODERATO_OUSD;
         } else {
