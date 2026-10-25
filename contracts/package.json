@@ -4,13 +4,11 @@
     "private": true,
     "type": "module",
     "scripts": {
-        "deploy:testnets": "forge script Rawchunks --rpc-url arbitrum_sepolia --broadcast && forge script Rawchunks --rpc-url base_sepolia --broadcast && forge script Rawchunks --rpc-url tempo_moderato --broadcast",
-        "deploy:mainnets": "forge script Rawchunks --rpc-url tempo_mainnet --broadcast && forge script Rawchunks --rpc-url arbitrum_mainnet --broadcast && forge script Rawchunks --rpc-url base_mainnet --broadcast",
-        "deploy:arb-sepolia": "forge script Rawchunks --rpc-url arbitrum_sepolia --broadcast",
+        "deploy:testnets": "forge script Rawchunks --rpc-url base_sepolia --broadcast && forge script Rawchunks --rpc-url tempo_moderato --broadcast",
+        "deploy:mainnets": "forge script Rawchunks --rpc-url tempo_mainnet --broadcast && forge script Rawchunks --rpc-url base_mainnet --broadcast",
         "deploy:base-sepolia": "forge script Rawchunks --rpc-url base_sepolia --broadcast",
         "deploy:tempo-moderato": "forge script Rawchunks --rpc-url tempo_moderato --broadcast",
         "deploy:tempo": "forge script Rawchunks --rpc-url tempo_mainnet --broadcast",
-        "deploy:arb": "forge script Rawchunks --rpc-url arbitrum_mainnet --broadcast",
         "deploy:base": "forge script Rawchunks --rpc-url base_mainnet --broadcast"
     }
 }

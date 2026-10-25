@@ -64,7 +64,7 @@ contract Rawchunks is Script {
         bytes memory factoryInitCode = abi.encodePacked(type(Factory).creationCode, abi.encode(deployer));
         address factoryAddress = computeAddress(FACTORY_SALT, factoryInitCode);
 
-        bytes memory royaltiesInitCode = abi.encodePacked(type(Royalties).creationCode, abi.encode(treasuryAddress, deployer));
+        bytes memory royaltiesInitCode = abi.encodePacked(type(Royalties).creationCode, abi.encode(deployer, deployer));
         address royaltiesAddress = computeAddress(ROYALTIES_SALT, royaltiesInitCode);
 
         bytes memory remixInitCode = abi.encodePacked(type(Remix).creationCode, abi.encode(factoryAddress, royaltiesAddress, deployer));
@@ -82,6 +82,12 @@ contract Rawchunks is Script {
 
         Factory factory = Factory(deployedFactory);
         Royalties royalties = Royalties(deployedRoyalties);
+
+        // Configure Treasury address on Royalties
+        if (treasuryAddress != address(0) && royalties.treasury() != treasuryAddress) {
+            royalties.setTreasury(treasuryAddress);
+            console2.log("Configured Treasury on Royalties:", treasuryAddress);
+        }
 
         // Configure network-specific USDC
         address chainUsdc;

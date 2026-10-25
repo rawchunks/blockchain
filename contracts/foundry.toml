@@ -17,14 +17,10 @@ remappings = [
 
 # RPC Endpoints
 [rpc_endpoints]
-arbitrum_sepolia = "${ARBITRUM_SEPOLIA_RPC}"
-arbitrum_mainnet = "${ARBITRUM_MAINNET_RPC}"
 base_sepolia = "${BASE_SEPOLIA_RPC}"
 base_mainnet = "${BASE_MAINNET_RPC}"
 tempo_mainnet = "${TEMPO_MAINNET_RPC}"
 tempo_moderato = "${TEMPO_MODERATO_RPC}"
-robinhood_mainnet = "${ROBINHOOD_MAINNET_RPC}"
-robinhood_testnet = "${ROBINHOOD_TESTNET_RPC}"
 
 # Formatter
 [fmt]
